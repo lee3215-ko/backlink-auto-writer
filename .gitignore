@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.zip
+
+# Logs & local data
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Secrets
+.env
+*.env

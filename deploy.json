@@ -1,0 +1,53 @@
+{
+  "github_owner": "lee3215-ko",
+  "github_repo": "backlink-auto-writer",
+  "release_asset": "BacklinkWriter.zip",
+  "default_bump": "patch",
+  "app_display_name": "백링크 자동 글쓰기",
+  "version": {
+    "file": "app_constants.py",
+    "variable": "APP_VERSION"
+  },
+  "build": {
+    "script": "build.bat",
+    "dist_dir": "dist/BacklinkWriter"
+  },
+  "git_add": [
+    ".gitignore",
+    "README.md",
+    "app_constants.py",
+    "app_paths.py",
+    "app_state.py",
+    "app_logger.py",
+    "article_builder.py",
+    "batch_jobs.py",
+    "board_catalog.py",
+    "board_discoverer.py",
+    "board_probed.py",
+    "board_probe.py",
+    "board_search.py",
+    "board_url.py",
+    "board_auto_search.py",
+    "browser_prefs.py",
+    "board_writer.py",
+    "captcha_solver.py",
+    "editor_content.py",
+    "form_autofill.py",
+    "html_mode.py",
+    "main.py",
+    "post_history.py",
+    "sets_panel.py",
+    "startup_update.py",
+    "update_splash.py",
+    "updater.py",
+    "update_ui.py",
+    "requirements.txt",
+    "scripts/sync-user-data.ps1",
+    "scripts/install-playwright.ps1",
+    "build.bat",
+    "build.spec",
+    "deploy.bat",
+    "run.bat",
+    "시작.bat"
+  ]
+}

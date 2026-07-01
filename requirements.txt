@@ -1,0 +1,6 @@
+playwright>=1.40.0
+faker>=22.0.0
+ddddocr>=1.4.0
+opencv-python>=4.8.0
+duckduckgo-search>=6.0.0
+ddgs>=9.0.0
