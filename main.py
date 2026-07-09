@@ -8,19 +8,32 @@ import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
-from app_constants import APP_DISPLAY_NAME, APP_VERSION
+from app_constants import APP_DISPLAY_NAME, APP_VERSION, FAIL_SKIP_THRESHOLD, UPDATE_VERSION_URL
+from error_messages import localize_error_message
 from app_logger import log
 from app_state import apply_to_app, collect_from_app, save_state
 from batch_jobs import PostJob, build_jobs, parse_lines, normalize_board_url
 from board_writer import BoardWriter, random_english_name
+from comment_writer import CommentWriter
 from post_history import PostHistory, PostRecord
+from excluded_urls import ExcludedUrlRegistry
+from target_jobs import TargetJob, build_target_jobs
+from url_analyzer import UrlAnalysis, analyze_urls, summarize_analyses
+from url_recommend import recommend_urls
+from wordpress_comment import WordPressCommentWriter
+from movable_type_comment import MovableTypeCommentWriter
+from zeroboard_writer import ZeroBoardWriter
+from custom_bbs_comment import CustomBbsCommentWriter
 from board_catalog import STATUS_LABEL, BoardCatalog
 from board_discoverer import BoardDiscoverer, DiscovererStats
 from board_search import SEARCH_PRESETS, preset_text
-from browser_prefs import is_headless, set_headless
+from browser_prefs import is_headless, set_app_window, set_headless
+from win_ui import bootstrap_before_tk, install_window_move_guard
 from sets_panel import ContentSetsTab
 from startup_update import try_startup_update
 from update_splash import UpdateSplash
+from update_ui import schedule_update_check
+from app_paths import is_frozen
 
 COLORS = {
     "bg": "#f0f4f8",
@@ -40,6 +53,8 @@ COLORS = {
 
 FONT = "맑은 고딕"
 FONT_MONO = "Consolas"
+CHK_ON = "☑"
+CHK_OFF = "☐"
 
 
 def _job_links(job: PostJob) -> list[tuple[str, str]]:
@@ -55,7 +70,13 @@ class BacklinkApp(tk.Tk):
         self.configure(bg=COLORS["bg"])
 
         self.writer = BoardWriter()
+        self.comment_writer = CommentWriter()
+        self.wp_comment_writer = WordPressCommentWriter()
+        self.mt_comment_writer = MovableTypeCommentWriter()
+        self.zboard_writer = ZeroBoardWriter()
+        self.custom_bbs_writer = CustomBbsCommentWriter()
         self.history = PostHistory()
+        self.excluded_urls = ExcludedUrlRegistry()
         self.catalog = BoardCatalog()
         self.discoverer = BoardDiscoverer(
             self.catalog,
@@ -69,22 +90,46 @@ class BacklinkApp(tk.Tk):
         self._save_after_id: str | None = None
         self._toast_after_id: str | None = None
         self._busy = False
-        self._batch_jobs: list[PostJob] = []
+        self._batch_jobs: list[PostJob] | list[TargetJob] = []
         self._write_post_interval_sec = 0.0
         self._write_repeat_interval_sec = 0.0
         self._write_continuous = False
         self._batch_round_lock = threading.Lock()
         self._urls_list_syncing = False
-        self._url_check_rows: list[tuple[str, tk.BooleanVar, ttk.Checkbutton]] = []
+        self._urls_recommend_syncing = False
+        self._url_recommend_after_id: str | None = None
+        self._url_pick_data: dict[str, str] = {}
+        self._url_pick_checked: set[str] = set()
+        self._history_pick_checked: set[str] = set()
+        self._history_pick_urls: dict[str, str] = {}
+        self._window_moving = False
+        self._log_pending: list[tuple[str, str]] = []
+        self._discover_log_pending: list[str] = []
 
         self._setup_styles()
         self._build_ui()
+        set_app_window(self)
+        install_window_move_guard(
+            self,
+            on_move_start=self._mark_window_moving,
+            on_move_end=self._on_window_move_end,
+        )
         apply_to_app(self)
+        if self.excluded_urls.count():
+            self._purge_excluded_urls_from_box()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._bind_autosave()
+        self._configure_fail_skip_tree_tags()
         self._sync_urls_pick_list(preserve_selection=False)
         self._refresh_counts()
         self._refresh_history_tree()
+        if is_frozen():
+            schedule_update_check(
+                self,
+                version_url=UPDATE_VERSION_URL,
+                current_version=APP_VERSION,
+            )
+        self.after(300, self._apply_startup_url_recommend)
 
     def _on_headless_toggle(self) -> None:
         set_headless(bool(self.headless_var.get()))
@@ -156,6 +201,24 @@ class BacklinkApp(tk.Tk):
             expand=[("selected", [1, 2, 1, 0])],
         )
 
+    def _configure_fail_skip_tree_tags(self) -> None:
+        bg, fg = "#dde4ec", "#64748b"
+        for attr in ("urls_pick_tree", "history_tree"):
+            tree = getattr(self, attr, None)
+            if tree is not None:
+                tree.tag_configure("fail_skip", background=bg, foreground=fg)
+
+    def _is_fail_skipped(self, url: str) -> bool:
+        return self.history.is_fail_skipped(url, threshold=FAIL_SKIP_THRESHOLD)
+
+    def _url_pick_display(self, url: str, board_key: str) -> tuple[str, tuple[str, ...]]:
+        display = url if len(url) <= 72 else url[:69] + "..."
+        fail_n = self.history.get_fail_count(board_key)
+        if fail_n >= FAIL_SKIP_THRESHOLD:
+            short = display if len(display) <= 58 else display[:55] + "..."
+            return f"⚠ 실패{fail_n} · {short}", ("fail_skip",)
+        return display, ()
+
     def _build_ui(self) -> None:
         self.header_frame = tk.Frame(self, bg=COLORS["header"], height=64)
         self.header_frame.pack(fill="x")
@@ -204,6 +267,7 @@ class BacklinkApp(tk.Tk):
 
         self._build_sets_tab()
         self._build_discover_tab()
+        self._build_check_tab()
         self._build_write_tab()
         self._build_history_tab()
 
@@ -214,7 +278,7 @@ class BacklinkApp(tk.Tk):
         self.sets_panel.pack(fill="both", expand=True, padx=4, pady=4)
 
     def _go_write_tab(self) -> None:
-        self.notebook.select(2)
+        self.notebook.select(3)
 
     def _build_discover_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -402,6 +466,9 @@ class BacklinkApp(tk.Tk):
             log.warning("상태 저장 실패: %s", e)
 
     def _discover_log(self, msg: str) -> None:
+        if self._window_moving:
+            self._discover_log_pending.append(msg)
+            return
         self.discover_log_box.config(state="normal")
         self.discover_log_box.insert("end", msg + "\n")
         self.discover_log_box.see("end")
@@ -559,9 +626,13 @@ class BacklinkApp(tk.Tk):
         if not urls:
             self._show_toast("추가할 URL이 없습니다.", error=True)
             return
+        mode = self._get_write_mode()
+        urls, _ = recommend_urls(urls, mode=mode)
         existing = set(parse_lines(self._get_text("urls")))
         added = []
         for u in urls:
+            if self.excluded_urls.is_excluded(u):
+                continue
             if u not in existing:
                 added.append(u)
                 existing.add(u)
@@ -571,6 +642,7 @@ class BacklinkApp(tk.Tk):
         cur = self._get_text("urls").rstrip()
         block = "\n".join(added)
         self.urls_box.insert("end", ("" if not cur else "\n") + block + "\n")
+        self._schedule_url_recommend(immediate=True)
         self._sync_urls_pick_list(preserve_selection=False)
         self._refresh_counts()
         self._schedule_save()
@@ -664,6 +736,73 @@ class BacklinkApp(tk.Tk):
         self._refresh_catalog_tree()
         self._discover_log("--- 수집 종료 ---")
 
+    def _build_check_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="  URL 검사 · 댓글  ")
+
+        top = ttk.Frame(tab)
+        top.pack(fill="both", expand=True, padx=8, pady=8)
+
+        ttk.Label(
+            top,
+            text="URL을 붙여넣고 검사 — 그누보드(글/댓글), 워드프레스 댓글 지원 · 블로그·해외 포럼은 대부분 불가",
+            style="Hint.TLabel",
+        ).pack(anchor="w")
+
+        self.check_url_box = scrolledtext.ScrolledText(top, height=10, font=(FONT_MONO, 9))
+        self.check_url_box.pack(fill="both", expand=True, pady=6)
+
+        btn_row = ttk.Frame(top)
+        btn_row.pack(fill="x", pady=4)
+        ttk.Button(btn_row, text="URL 일괄 검사", command=self._on_check_urls).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_row, text="지원 URL → 글작성 탭", command=self._send_checked_to_write).pack(side="left", padx=(0, 6))
+        self.check_summary_var = tk.StringVar(value="검사 대기")
+        ttk.Label(btn_row, textvariable=self.check_summary_var, style="Count.TLabel").pack(side="left", padx=12)
+
+        tree_f = ttk.Frame(top)
+        tree_f.pack(fill="both", expand=True)
+        cols = ("support", "kind", "url", "note")
+        self.check_tree = ttk.Treeview(tree_f, columns=cols, show="headings", height=14)
+        self.check_tree.heading("support", text="지원")
+        self.check_tree.heading("kind", text="유형")
+        self.check_tree.heading("url", text="URL")
+        self.check_tree.heading("note", text="설명")
+        self.check_tree.column("support", width=72, anchor="center")
+        self.check_tree.column("kind", width=100)
+        self.check_tree.column("url", width=340)
+        self.check_tree.column("note", width=280)
+        self.check_tree.pack(fill="both", expand=True, side="left")
+        sb = ttk.Scrollbar(tree_f, orient="vertical", command=self.check_tree.yview)
+        sb.pack(side="right", fill="y")
+        self.check_tree.configure(yscrollcommand=sb.set)
+        self._check_analyses: list[UrlAnalysis] = []
+
+    def _on_check_urls(self) -> None:
+        text = self.check_url_box.get("1.0", "end")
+        items = analyze_urls(parse_lines(text))
+        self._check_analyses = items
+        for row in self.check_tree.get_children():
+            self.check_tree.delete(row)
+        for i, a in enumerate(items):
+            display = a.url if len(a.url) <= 52 else a.url[:49] + "..."
+            self.check_tree.insert("", "end", iid=str(i), values=(a.support_label, a.kind_label, display, a.note[:80]))
+        counts = summarize_analyses(items)
+        self.check_summary_var.set(
+            f"전체 {len(items)} · 게시글 {counts.get('post', 0)} · 댓글 {counts.get('comment', 0)} · "
+            f"부분 {counts.get('partial', 0)} · 불가 {counts.get('no', 0)}"
+        )
+
+    def _send_checked_to_write(self) -> None:
+        if not self._check_analyses:
+            self._on_check_urls()
+        supported = [a.url for a in self._check_analyses if a.support_level in ("post", "comment")]
+        if not supported:
+            messagebox.showinfo("안내", "지원되는 URL이 없습니다.")
+            return
+        self.write_mode_var.set("auto")
+        self._append_urls_to_write(supported)
+        self._go_write_tab()
+
     def _build_write_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="  글 작성  ")
@@ -674,13 +813,34 @@ class BacklinkApp(tk.Tk):
         left = ttk.Frame(body)
         body.add(left, weight=3)
 
-        self._add_text_panel(left, "게시판 URL", "urls", "한 줄에 URL 하나 · 붙여넣기 후 아래에서 체크", height=5)
+        self._add_text_panel(left, "게시판 URL", "urls", "붙여넣으면 자동으로 추천 URL로 정리됩니다", height=5)
+        url_btn_row = ttk.Frame(left, style="Card.TFrame")
+        url_btn_row.pack(fill="x", pady=(0, 4))
+        ttk.Button(url_btn_row, text="URL 자동 정리", command=self._on_recommend_urls_click).pack(side="left")
+
+        mode_row = ttk.Frame(left, style="Card.TFrame")
+        mode_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(mode_row, text="작업 유형", style="Hint.TLabel").pack(side="left")
+        self.write_mode_var = tk.StringVar(value="auto")
+        ttk.Combobox(
+            mode_row,
+            textvariable=self.write_mode_var,
+            values=("auto", "post", "comment"),
+            state="readonly",
+            width=14,
+        ).pack(side="left", padx=8)
+        self.write_mode_var.trace_add("write", lambda *_: self._on_write_mode_changed())
+        ttk.Label(
+            mode_row,
+            text="auto=URL별 자동 · post=게시글만 · comment=댓글만",
+            style="Hint.TLabel",
+        ).pack(side="left")
 
         pick_f = ttk.LabelFrame(left, text="작업할 URL 선택", style="Card.TLabelframe", padding=6)
         pick_f.pack(fill="both", expand=True, pady=(0, 6))
         ttk.Label(
             pick_f,
-            text="체크한 URL만 작업 · 체크 없으면 전체 작업",
+            text=f"체크한 URL만 작업 · 체크 없으면 전체 · 실패 {FAIL_SKIP_THRESHOLD}회 이상은 회색(자동 제외)",
             style="Hint.TLabel",
         ).pack(anchor="w")
         search_row = ttk.Frame(pick_f)
@@ -693,17 +853,22 @@ class BacklinkApp(tk.Tk):
         self.urls_pick_search_var.trace_add("write", lambda *_: self._apply_urls_check_filter())
         pick_body = ttk.Frame(pick_f)
         pick_body.pack(fill="both", expand=True, pady=4)
-        self.urls_check_canvas = tk.Canvas(pick_body, highlightthickness=0, height=160, bg=COLORS["card"])
-        pick_sb = ttk.Scrollbar(pick_body, orient="vertical", command=self.urls_check_canvas.yview)
-        self.urls_check_canvas.configure(yscrollcommand=pick_sb.set)
-        self.urls_check_canvas.pack(side="left", fill="both", expand=True)
+        self.urls_pick_tree = ttk.Treeview(
+            pick_body,
+            columns=("url",),
+            show="tree headings",
+            height=8,
+            selectmode="none",
+        )
+        self.urls_pick_tree.heading("#0", text="✓")
+        self.urls_pick_tree.heading("url", text="게시판 URL")
+        self.urls_pick_tree.column("#0", width=30, anchor="center", stretch=False)
+        self.urls_pick_tree.column("url", width=420, stretch=True)
+        pick_sb = ttk.Scrollbar(pick_body, orient="vertical", command=self.urls_pick_tree.yview)
+        self.urls_pick_tree.configure(yscrollcommand=pick_sb.set)
+        self.urls_pick_tree.pack(side="left", fill="both", expand=True)
         pick_sb.pack(side="right", fill="y")
-        self.urls_check_frame = ttk.Frame(self.urls_check_canvas)
-        self._urls_check_window = self.urls_check_canvas.create_window((0, 0), window=self.urls_check_frame, anchor="nw")
-        self.urls_check_frame.bind("<Configure>", self._on_urls_check_frame_configure)
-        self.urls_check_canvas.bind("<Configure>", self._on_urls_check_canvas_configure)
-        self.urls_check_canvas.bind("<Enter>", lambda _e: self.urls_check_canvas.bind_all("<MouseWheel>", self._on_urls_check_mousewheel))
-        self.urls_check_canvas.bind("<Leave>", lambda _e: self.urls_check_canvas.unbind_all("<MouseWheel>"))
+        self.urls_pick_tree.bind("<ButtonRelease-1>", self._on_urls_pick_tree_click)
         pick_btn = ttk.Frame(pick_f)
         pick_btn.pack(fill="x")
         ttk.Button(pick_btn, text="전체 체크", command=self._pick_all_urls).pack(side="left", padx=(0, 4))
@@ -734,7 +899,7 @@ class BacklinkApp(tk.Tk):
 
         ttk.Label(
             right,
-            text="콘텐츠 세트 탭에서 URL·키워드 등록\n한 글 = 세트별 키워드 1개 + 링크 분산 원고 자동 작성",
+            text="콘텐츠 세트 탭에서 URL·키워드 등록\n게시글=그누보드 글쓰기 · 댓글=글보기/워드프레스",
             style="Hint.TLabel",
             justify="left",
         ).pack(anchor="w", pady=(0, 6))
@@ -767,7 +932,7 @@ class BacklinkApp(tk.Tk):
             style="Hint.TLabel",
         ).pack(anchor="w")
 
-        self.auto_btn = ttk.Button(right, text="▶  순차 자동 작성", style="Accent.TButton", command=self._on_batch_auto)
+        self.auto_btn = ttk.Button(right, text="▶  순차 자동 작성/댓글", style="Accent.TButton", command=self._on_batch_auto)
         self.auto_btn.pack(fill="x", pady=4)
         row = ttk.Frame(right)
         row.pack(fill="x")
@@ -807,30 +972,52 @@ class BacklinkApp(tk.Tk):
         top = ttk.Frame(tab)
         top.pack(fill="x", pady=(0, 8))
         ttk.Label(top, text="실제 등록된 게시판 URL · 동일 게시판 반복 등록 상세", style="Hint.TLabel").pack(side="left")
+        ttk.Button(top, text="전체 이력 삭제", command=self._clear_history).pack(side="right")
         ttk.Button(top, text="새로고침", command=self._refresh_history_tree).pack(side="right", padx=4)
-        ttk.Button(top, text="이력 삭제", command=self._clear_history).pack(side="right")
+        self.history_delete_btn = ttk.Button(
+            top, text="선택 삭제", command=self._exclude_selected_boards_from_history, state="disabled",
+        )
+        self.history_delete_btn.pack(side="right", padx=4)
+        ttk.Button(top, text="실패 사유 삭제", command=self._open_fail_reason_delete_dialog).pack(side="right", padx=2)
+        ttk.Button(top, text="동일 사유 선택", command=self._history_select_same_fail_reason).pack(side="right", padx=2)
+        ttk.Button(top, text="선택 해제", command=self._history_pick_clear).pack(side="right", padx=2)
+        ttk.Button(top, text="전체 선택", command=self._history_pick_all).pack(side="right", padx=2)
+        self.history_pick_count_var = tk.StringVar(value="")
+        ttk.Label(top, textvariable=self.history_pick_count_var, style="Hint.TLabel", width=10).pack(side="right")
 
         paned = ttk.PanedWindow(tab, orient="vertical")
         paned.pack(fill="both", expand=True)
 
-        tree_frame = ttk.LabelFrame(paned, text="게시판 목록", style="Card.TLabelframe", padding=4)
-        paned.add(tree_frame, weight=1)
+        list_outer = ttk.LabelFrame(paned, text="게시판 목록", style="Card.TLabelframe", padding=4)
+        paned.add(list_outer, weight=1)
 
-        cols = ("board", "posts", "success", "last")
-        self.history_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=10)
-        self.history_tree.heading("board", text="게시판 URL")
+        list_body = ttk.Frame(list_outer)
+        list_body.pack(fill="both", expand=True)
+        cols = ("url", "posts", "ok", "last")
+        self.history_tree = ttk.Treeview(
+            list_body,
+            columns=cols,
+            show="tree headings",
+            height=8,
+            selectmode="browse",
+        )
+        self.history_tree.heading("#0", text="✓")
+        self.history_tree.heading("url", text="게시 URL")
         self.history_tree.heading("posts", text="등록")
-        self.history_tree.heading("success", text="성공")
+        self.history_tree.heading("ok", text="성공")
         self.history_tree.heading("last", text="최근")
-        self.history_tree.column("board", width=480)
-        self.history_tree.column("posts", width=50, anchor="center")
-        self.history_tree.column("success", width=50, anchor="center")
-        self.history_tree.column("last", width=130)
-        self.history_tree.pack(fill="both", expand=True, side="left")
-        sb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.history_tree.yview)
-        sb.pack(side="right", fill="y")
-        self.history_tree.configure(yscrollcommand=sb.set)
-        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_select)
+        self.history_tree.column("#0", width=30, anchor="center", stretch=False)
+        self.history_tree.column("url", width=300, stretch=True)
+        self.history_tree.column("posts", width=44, anchor="center", stretch=False)
+        self.history_tree.column("ok", width=44, anchor="center", stretch=False)
+        self.history_tree.column("last", width=110, stretch=False)
+        hist_sb = ttk.Scrollbar(list_body, orient="vertical", command=self.history_tree.yview)
+        self.history_tree.configure(yscrollcommand=hist_sb.set)
+        self.history_tree.pack(side="left", fill="both", expand=True)
+        hist_sb.pack(side="right", fill="y")
+        self.history_tree.bind("<ButtonRelease-1>", self._on_history_tree_click)
+        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_tree_select)
+        self._selected_history_key: str = ""
 
         detail_frame = ttk.LabelFrame(paned, text="상세 (사이트·키워드별 등록 횟수)", style="Card.TLabelframe", padding=4)
         paned.add(detail_frame, weight=2)
@@ -863,16 +1050,66 @@ class BacklinkApp(tk.Tk):
             box.delete("1.0", "end")
             box.configure(fg=COLORS["text"])
 
-    def _on_urls_check_frame_configure(self, _event=None) -> None:
-        self.urls_check_canvas.configure(scrollregion=self.urls_check_canvas.bbox("all"))
+    def _on_window_move_end(self) -> None:
+        self._window_moving = False
+        if self._log_pending:
+            pending, self._log_pending = self._log_pending, []
+            for msg, tag in pending:
+                self._log(msg, tag)
+        if self._discover_log_pending:
+            pending, self._discover_log_pending = self._discover_log_pending, []
+            for msg in pending:
+                self._discover_log(msg)
 
-    def _on_urls_check_canvas_configure(self, event=None) -> None:
-        if event is not None:
-            self.urls_check_canvas.itemconfigure(self._urls_check_window, width=event.width)
+    def _mark_window_moving(self) -> None:
+        self._window_moving = True
 
-    def _on_urls_check_mousewheel(self, event) -> None:
-        if hasattr(self, "urls_check_canvas"):
-            self.urls_check_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    def _url_pick_mark(self, iid: str) -> str:
+        return CHK_ON if iid in self._url_pick_checked else CHK_OFF
+
+    def _history_pick_mark(self, key: str) -> str:
+        return CHK_ON if key in self._history_pick_checked else CHK_OFF
+
+    def _on_urls_pick_tree_click(self, event) -> None:
+        if not hasattr(self, "urls_pick_tree"):
+            return
+        tree = self.urls_pick_tree
+        row = tree.identify_row(event.y)
+        if not row:
+            return
+        col = tree.identify_column(event.x)
+        if col != "#0":
+            return
+        if row in self._url_pick_checked:
+            self._url_pick_checked.discard(row)
+        else:
+            self._url_pick_checked.add(row)
+        tree.item(row, text=self._url_pick_mark(row))
+        self._on_urls_pick_changed()
+
+    def _on_history_tree_click(self, event) -> None:
+        if not hasattr(self, "history_tree"):
+            return
+        tree = self.history_tree
+        row = tree.identify_row(event.y)
+        if not row or row == "_empty":
+            return
+        col = tree.identify_column(event.x)
+        if col == "#0":
+            if row in self._history_pick_checked:
+                self._history_pick_checked.discard(row)
+            else:
+                self._history_pick_checked.add(row)
+            tree.item(row, text=self._history_pick_mark(row))
+            self._update_history_pick_ui()
+            return
+        if col == "#1":
+            self._select_history_board(row)
+
+    def _on_history_tree_select(self, _event=None) -> None:
+        sel = self.history_tree.selection()
+        if sel and sel[0] != "_empty":
+            self._select_history_board(sel[0])
 
     def _all_parsed_urls(self) -> list[str]:
         return parse_lines(self._get_text("urls"))
@@ -885,90 +1122,194 @@ class BacklinkApp(tk.Tk):
         return not q or q in url.lower()
 
     def _apply_urls_check_filter(self) -> None:
-        if not hasattr(self, "urls_check_frame"):
+        if not hasattr(self, "urls_pick_tree"):
             return
+        tree = self.urls_pick_tree
         visible = 0
-        for url, _var, cb in self._url_check_rows:
-            if self._url_matches_pick_filter(url):
-                cb.pack(anchor="w", fill="x", pady=1)
+        for iid in self._url_pick_data:
+            if self._url_matches_pick_filter(self._url_pick_data[iid]):
+                try:
+                    tree.reattach(iid, "", "end")
+                except tk.TclError:
+                    pass
                 visible += 1
             else:
-                cb.pack_forget()
-        total = len(self._url_check_rows)
+                tree.detach(iid)
+        total = len(self._url_pick_data)
         q = self._urls_pick_filter_query()
         if hasattr(self, "urls_pick_filter_label"):
             if q:
                 self.urls_pick_filter_label.configure(text=f"{visible}/{total}")
             else:
                 self.urls_pick_filter_label.configure(text="")
-        self._on_urls_check_frame_configure()
 
     def _sync_urls_pick_list(self, *, preserve_selection: bool = True) -> None:
-        if not hasattr(self, "urls_check_frame"):
+        if not hasattr(self, "urls_pick_tree"):
             return
-        prev_checked: set[str] = set()
+        prev_checked_keys: set[str] = set()
         if preserve_selection:
-            for url, var, _cb in self._url_check_rows:
-                if var.get():
-                    prev_checked.add(normalize_board_url(url))
+            prev_checked_keys = {
+                normalize_board_url(self._url_pick_data[iid])
+                for iid in self._url_pick_checked
+                if iid in self._url_pick_data
+            }
         self._urls_list_syncing = True
         try:
-            for child in self.urls_check_frame.winfo_children():
-                child.destroy()
-            self._url_check_rows.clear()
+            tree = self.urls_pick_tree
+            for item in tree.get_children():
+                tree.delete(item)
+            self._url_pick_data.clear()
+            self._url_pick_checked.clear()
+            idx = 0
             for url in self._all_parsed_urls():
+                if self.excluded_urls.is_excluded(url):
+                    continue
                 key = normalize_board_url(url)
-                checked = key in prev_checked if preserve_selection else False
-                var = tk.BooleanVar(value=checked)
-                display = url if len(url) <= 72 else url[:69] + "..."
-                cb = ttk.Checkbutton(
-                    self.urls_check_frame,
-                    text=display,
-                    variable=var,
-                    command=self._on_urls_pick_changed,
+                iid = f"url_{idx}"
+                idx += 1
+                self._url_pick_data[iid] = url
+                if preserve_selection and key in prev_checked_keys:
+                    self._url_pick_checked.add(iid)
+                display, tags = self._url_pick_display(url, key)
+                tree.insert(
+                    "",
+                    "end",
+                    iid=iid,
+                    text=self._url_pick_mark(iid),
+                    values=(display,),
+                    tags=tags,
                 )
-                self._url_check_rows.append((url, var, cb))
         finally:
             self._urls_list_syncing = False
         self._apply_urls_check_filter()
 
     def _pick_list_urls(self) -> list[str]:
-        return [url for url, var, _cb in self._url_check_rows if var.get()]
+        return [self._url_pick_data[iid] for iid in self._url_pick_checked if iid in self._url_pick_data]
 
     def _has_url_pick_selection(self) -> bool:
-        return any(var.get() for _, var, _cb in self._url_check_rows)
+        return bool(self._url_pick_checked)
+
+    def _visible_url_pick_keys(self) -> list[str]:
+        q = self._urls_pick_filter_query()
+        iids = list(self._url_pick_data.keys())
+        if not q:
+            return iids
+        return [iid for iid in iids if self._url_matches_pick_filter(self._url_pick_data[iid])]
+
+    def _pick_all_urls(self) -> None:
+        for iid in self._visible_url_pick_keys():
+            self._url_pick_checked.add(iid)
+            if hasattr(self, "urls_pick_tree"):
+                self.urls_pick_tree.item(iid, text=CHK_ON)
+        self._refresh_counts()
+
+    def _pick_clear_urls(self) -> None:
+        for iid in self._visible_url_pick_keys():
+            self._url_pick_checked.discard(iid)
+            if hasattr(self, "urls_pick_tree"):
+                self.urls_pick_tree.item(iid, text=CHK_OFF)
+        self._refresh_counts()
+
+    def _pick_invert_urls(self) -> None:
+        for iid in self._visible_url_pick_keys():
+            if iid in self._url_pick_checked:
+                self._url_pick_checked.discard(iid)
+                mark = CHK_OFF
+            else:
+                self._url_pick_checked.add(iid)
+                mark = CHK_ON
+            if hasattr(self, "urls_pick_tree"):
+                self.urls_pick_tree.item(iid, text=mark)
+        self._refresh_counts()
 
     def _active_job_urls(self) -> list[str]:
         picked = self._pick_list_urls()
         if picked:
-            return picked
-        return self._all_parsed_urls()
+            source = picked
+        else:
+            source = self._all_parsed_urls()
+        return [
+            u for u in source
+            if not self.excluded_urls.is_excluded(u) and not self._is_fail_skipped(u)
+        ]
 
-    def _visible_url_check_rows(self) -> list[tuple[str, tk.BooleanVar, ttk.Checkbutton]]:
-        q = self._urls_pick_filter_query()
-        if not q:
-            return self._url_check_rows
-        return [row for row in self._url_check_rows if self._url_matches_pick_filter(row[0])]
+    def _count_fail_skipped_urls(self, urls: list[str] | None = None) -> int:
+        items = urls if urls is not None else self._all_parsed_urls()
+        return sum(
+            1 for u in items
+            if self._is_fail_skipped(u) and not self.excluded_urls.is_excluded(u)
+        )
 
-    def _pick_all_urls(self) -> None:
-        for _, var, _cb in self._visible_url_check_rows():
-            var.set(True)
-        self._refresh_counts()
+    def _get_write_mode(self) -> str:
+        mode = getattr(self, "write_mode_var", None)
+        return mode.get() if mode else "auto"
 
-    def _pick_clear_urls(self) -> None:
-        for _, var, _cb in self._visible_url_check_rows():
-            var.set(False)
-        self._refresh_counts()
+    def _schedule_url_recommend(self, *, immediate: bool = False) -> None:
+        if self._urls_recommend_syncing or not hasattr(self, "urls_box"):
+            return
+        if self._url_recommend_after_id:
+            self.after_cancel(self._url_recommend_after_id)
+            self._url_recommend_after_id = None
+        delay = 0 if immediate else 700
+        self._url_recommend_after_id = self.after(delay, self._apply_url_recommendations)
 
-    def _pick_invert_urls(self) -> None:
-        for _, var, _cb in self._visible_url_check_rows():
-            var.set(not var.get())
-        self._refresh_counts()
+    def _recommend_urls_in_box(self, *, show_toast: bool = True) -> int:
+        if not hasattr(self, "urls_box"):
+            return 0
+        urls = parse_lines(self._get_text("urls"))
+        if not urls:
+            return 0
+        new_urls, changes = recommend_urls(urls, mode=self._get_write_mode())
+        if new_urls == urls:
+            return 0
+        self._urls_recommend_syncing = True
+        try:
+            self.urls_box.delete("1.0", "end")
+            if new_urls:
+                self.urls_box.insert("1.0", "\n".join(new_urls) + "\n")
+        finally:
+            self._urls_recommend_syncing = False
+        if show_toast and changes:
+            self._show_toast(f"URL {len(changes)}건 자동 정리됨")
+        return len(changes)
 
-    def _on_urls_input_changed(self) -> None:
+    def _apply_url_recommendations(self) -> None:
+        self._url_recommend_after_id = None
+        changed = self._recommend_urls_in_box(show_toast=True)
+        if changed:
+            self._on_input_changed()
+            self._sync_urls_pick_list(preserve_selection=True)
+            self._refresh_counts()
+            self._schedule_save()
+
+    def _apply_startup_url_recommend(self) -> None:
+        if self._recommend_urls_in_box(show_toast=False):
+            self._sync_urls_pick_list(preserve_selection=False)
+            self._refresh_counts()
+
+    def _on_recommend_urls_click(self) -> None:
+        n = self._recommend_urls_in_box(show_toast=True)
+        if not n:
+            self._show_toast("정리할 URL이 없습니다.")
+            return
         self._on_input_changed()
         self._sync_urls_pick_list(preserve_selection=True)
         self._refresh_counts()
+        self._schedule_save()
+
+    def _on_write_mode_changed(self) -> None:
+        if hasattr(self, "urls_box") and parse_lines(self._get_text("urls")):
+            self._schedule_url_recommend()
+
+    def _on_urls_input_changed(self) -> None:
+        self._on_input_changed()
+        if not self._urls_recommend_syncing:
+            self._sync_urls_pick_list(preserve_selection=True)
+            self._refresh_counts()
+            self._schedule_url_recommend()
+        else:
+            self._sync_urls_pick_list(preserve_selection=True)
+            self._refresh_counts()
 
     def _on_urls_pick_changed(self) -> None:
         if self._urls_list_syncing:
@@ -989,6 +1330,7 @@ class BacklinkApp(tk.Tk):
             return
         urls = self._all_parsed_urls()
         active = self._active_job_urls()
+        fail_skip_n = self._count_fail_skipped_urls(urls)
         titles = parse_lines(self._get_text("titles"))
         try:
             sets = self.sets_panel.get_content_sets() if hasattr(self, "sets_panel") else []
@@ -997,9 +1339,13 @@ class BacklinkApp(tk.Tk):
             n_sets = len(self.sets_panel._data) if hasattr(self, "sets_panel") else 0
         if self._has_url_pick_selection():
             url_label = f"전체 {len(urls)} · 체크 {len(active)}"
+            if fail_skip_n:
+                url_label += f" · 실패제외 {fail_skip_n}"
             job_label = f"작업 {len(active)}건"
         else:
             url_label = f"{len(urls)}개 URL"
+            if fail_skip_n:
+                url_label += f" · 실패제외 {fail_skip_n}"
             job_label = f"작업 {len(active)}건 (전체)"
         self.urls_count_var.set(url_label)
         self.job_count_var.set(
@@ -1011,26 +1357,249 @@ class BacklinkApp(tk.Tk):
             self.titles_count_var.set(f"{len(titles)}개 제목")
 
     def _refresh_history_tree(self) -> None:
-        for item in self.history_tree.get_children():
-            self.history_tree.delete(item)
-        self.history.load()
-        for s in self.history.get_summaries():
-            display = s.board_url if len(s.board_url) <= 70 else s.board_url[:67] + "..."
-            self.history_tree.insert(
-                "", "end", iid=s.board_key,
-                values=(display, s.post_count, s.success_count, s.last_at),
-            )
-
-    def _on_history_select(self, _event=None) -> None:
-        sel = self.history_tree.selection()
-        if not sel:
+        if not hasattr(self, "history_tree"):
             return
-        key = sel[0]
-        text = self.history.format_detail(key)
+        self.history.load()
+        tree = self.history_tree
+        for item in tree.get_children():
+            tree.delete(item)
+        self._history_pick_checked.clear()
+        self._history_pick_urls.clear()
+
+        summaries = self.history.get_summaries()
+        if not summaries:
+            tree.insert("", "end", iid="_empty", text="", values=("게시 이력이 없습니다.", "", "", ""))
+        else:
+            for s in summaries:
+                url = s.board_url
+                display = url if len(url) <= 54 else url[:51] + "..."
+                tags: tuple[str, ...] = ()
+                if s.fail_count >= FAIL_SKIP_THRESHOLD:
+                    display = f"⚠ 실패{s.fail_count} · {display}"
+                    tags = ("fail_skip",)
+                self._history_pick_urls[s.board_key] = url
+                tree.insert(
+                    "",
+                    "end",
+                    iid=s.board_key,
+                    text=CHK_OFF,
+                    values=(display, str(s.post_count), str(s.success_count), s.last_at),
+                    tags=tags,
+                )
+        self._update_history_pick_ui()
+
+        if self._selected_history_key:
+            still = any(s.board_key == self._selected_history_key for s in summaries)
+            if still:
+                self._show_history_detail(self._selected_history_key)
+            else:
+                self._selected_history_key = ""
+                self.history_detail.config(state="normal")
+                self.history_detail.delete("1.0", "end")
+                self.history_detail.config(state="disabled")
+
+    def _selected_history_boards(self) -> list[tuple[str, str]]:
+        return [
+            (key, self._history_pick_urls[key])
+            for key in self._history_pick_checked
+            if key in self._history_pick_urls
+        ]
+
+    def _update_history_pick_ui(self) -> None:
+        if not hasattr(self, "history_pick_count_var"):
+            return
+        n = len(self._history_pick_checked)
+        total = len(self._history_pick_urls)
+        if n:
+            self.history_pick_count_var.set(f"{n}/{total} 선택")
+            if hasattr(self, "history_delete_btn"):
+                self.history_delete_btn.config(state="normal")
+        else:
+            self.history_pick_count_var.set(f"0/{total}" if total else "")
+            if hasattr(self, "history_delete_btn"):
+                self.history_delete_btn.config(state="disabled")
+
+    def _history_pick_all(self) -> None:
+        for key in self._history_pick_urls:
+            self._history_pick_checked.add(key)
+            self.history_tree.item(key, text=CHK_ON)
+        self._update_history_pick_ui()
+
+    def _history_pick_clear(self) -> None:
+        self._history_pick_checked.clear()
+        for key in self._history_pick_urls:
+            self.history_tree.item(key, text=CHK_OFF)
+        self._update_history_pick_ui()
+
+    def _history_select_same_fail_reason(self) -> None:
+        if not self._selected_history_key:
+            messagebox.showinfo("안내", "목록에서 URL을 먼저 클릭해 상세를 연 다음 사용하세요.")
+            return
+        target_reason = ""
+        for reason, _n, boards in self.history.get_fail_reason_groups():
+            if any(k == self._selected_history_key for k, _u in boards):
+                target_reason = reason
+                break
+        if not target_reason:
+            messagebox.showinfo("안내", "선택한 URL에 실패 이력이 없습니다.")
+            return
+        keys = set(self.history.board_keys_with_fail_reason(target_reason))
+        self._history_pick_checked.clear()
+        for key in self._history_pick_urls:
+            mark = CHK_ON if key in keys else CHK_OFF
+            if key in keys:
+                self._history_pick_checked.add(key)
+            self.history_tree.item(key, text=mark)
+        self._update_history_pick_ui()
+
+    def _open_fail_reason_delete_dialog(self) -> None:
+        groups = self.history.get_fail_reason_groups()
+        if not groups:
+            messagebox.showinfo("안내", "삭제할 실패 이력이 없습니다.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("실패 사유별 삭제")
+        win.geometry("640x380")
+        win.transient(self)
+        win.grab_set()
+
+        ttk.Label(
+            win,
+            text="삭제할 실패 사유를 선택하세요. (해당 사유의 URL이 모두 제외됩니다)",
+            style="Hint.TLabel",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        list_frame = ttk.Frame(win)
+        list_frame.pack(fill="both", expand=True, padx=12, pady=4)
+        sb = ttk.Scrollbar(list_frame, orient="vertical")
+        lb = tk.Listbox(list_frame, font=(FONT, 9), yscrollcommand=sb.set, height=12)
+        sb.config(command=lb.yview)
+        lb.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        display_rows: list[tuple[str, int, list[tuple[str, str]]]] = []
+        for reason, count, boards in groups:
+            short = reason if len(reason) <= 72 else reason[:69] + "..."
+            lb.insert("end", f"[{count}개] {short}")
+            display_rows.append((reason, count, boards))
+        if display_rows:
+            lb.selection_set(0)
+
+        preview = scrolledtext.ScrolledText(win, height=6, font=(FONT_MONO, 8), state="disabled")
+        preview.pack(fill="x", padx=12, pady=(4, 8))
+
+        def show_preview(_event=None) -> None:
+            sel = lb.curselection()
+            if not sel:
+                return
+            _reason, _count, boards = display_rows[sel[0]]
+            lines = [u for _k, u in boards[:20]]
+            if len(boards) > 20:
+                lines.append(f"... 외 {len(boards) - 20}개")
+            preview.config(state="normal")
+            preview.delete("1.0", "end")
+            preview.insert("1.0", "\n".join(lines))
+            preview.config(state="disabled")
+
+        lb.bind("<<ListboxSelect>>", show_preview)
+        show_preview()
+
+        btn_row = ttk.Frame(win)
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def on_delete() -> None:
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showwarning("선택", "실패 사유를 선택해 주세요.", parent=win)
+                return
+            reason, count, boards = display_rows[sel[0]]
+            if not messagebox.askyesno(
+                "실패 사유 삭제",
+                f"아래 사유의 URL {count}개를 모두 삭제(제외)할까요?\n\n{reason}",
+                parent=win,
+            ):
+                return
+            win.destroy()
+            self._exclude_boards_from_history(boards)
+
+        ttk.Button(btn_row, text="선택 사유 URL 삭제", command=on_delete).pack(side="right", padx=4)
+        ttk.Button(btn_row, text="닫기", command=win.destroy).pack(side="right")
+
+    def _select_history_board(self, board_key: str) -> None:
+        self._selected_history_key = board_key
+        self._show_history_detail(board_key)
+
+    def _show_history_detail(self, board_key: str) -> None:
+        text = self.history.format_detail(board_key)
         self.history_detail.config(state="normal")
         self.history_detail.delete("1.0", "end")
         self.history_detail.insert("1.0", text)
         self.history_detail.config(state="disabled")
+
+    def _exclude_board_from_history(self, board_key: str, board_url: str) -> None:
+        self._exclude_boards_from_history([(board_key, board_url)])
+
+    def _exclude_selected_boards_from_history(self) -> None:
+        selected = self._selected_history_boards()
+        if not selected:
+            messagebox.showinfo("안내", "삭제할 URL을 체크해 주세요.")
+            return
+        self._exclude_boards_from_history(selected)
+
+    def _exclude_boards_from_history(self, boards: list[tuple[str, str]]) -> None:
+        if not boards:
+            return
+        n = len(boards)
+        if n == 1:
+            board_key, board_url = boards[0]
+            preview = board_url
+        else:
+            preview_lines = [u for _, u in boards[:8]]
+            if n > 8:
+                preview_lines.append(f"... 외 {n - 8}개")
+            preview = "\n".join(preview_lines)
+
+        if not messagebox.askyesno(
+            "URL 제외",
+            f"선택한 {n}개 URL을 삭제(제외)할까요?\n\n{preview}\n\n"
+            "· 게시 이력에서 제거\n"
+            "· 게시판 URL 목록에서 제거\n"
+            "· 다음 배치부터 자동 게시 안 함",
+        ):
+            return
+
+        removed_total = 0
+        for key, url in boards:
+            urls = self.history.collect_urls_for_board(key)
+            urls.add(url.strip())
+            self.excluded_urls.add(key, urls)
+            removed_total += self.history.remove_board(key)
+
+        if self._selected_history_key in {k for k, _ in boards}:
+            self._selected_history_key = ""
+
+        self._purge_excluded_urls_from_box()
+        self._refresh_history_tree()
+        self._sync_urls_pick_list(preserve_selection=False)
+        self._on_input_changed()
+        self._save_app_state()
+        log.info("URL 제외 %d건 (이력 %d건)", n, removed_total)
+        messagebox.showinfo(
+            "완료",
+            f"{n}개 URL을 제외 목록에 추가했습니다.\n다음 배치부터 해당 URL은 게시되지 않습니다.",
+        )
+
+    def _purge_excluded_urls_from_box(self) -> None:
+        if not hasattr(self, "urls_box"):
+            return
+        remaining = [u for u in self._all_parsed_urls() if not self.excluded_urls.is_excluded(u)]
+        self.urls_box.delete("1.0", "end")
+        if remaining:
+            self.urls_box.insert("1.0", "\n".join(remaining) + "\n")
+
+    def _on_history_select(self, _event=None) -> None:
+        pass
 
     def _clear_history(self) -> None:
         if messagebox.askyesno("이력 삭제", "게시 이력을 모두 삭제할까요?"):
@@ -1040,25 +1609,77 @@ class BacklinkApp(tk.Tk):
             self.history_detail.delete("1.0", "end")
             self.history_detail.config(state="disabled")
 
-    def _record_history(self, job: PostJob, status: str, message: str) -> None:
+    def _record_history(self, job: PostJob | TargetJob, status: str, message: str) -> None:
+        w = self.writer
+        if isinstance(job, TargetJob) and job.action == "comment_gnuboard":
+            w = self.comment_writer
+        elif isinstance(job, TargetJob) and job.action == "comment_wordpress":
+            w = self.wp_comment_writer
+        elif isinstance(job, TargetJob) and job.action == "comment_movable_type":
+            w = self.mt_comment_writer
+        elif isinstance(job, TargetJob) and job.action == "comment_custom_bbs":
+            w = self.custom_bbs_writer
+        elif isinstance(job, TargetJob) and job.kind == "zeroboard_post":
+            w = self.zboard_writer
         rec = PostRecord.from_job(
             job.board_url,
             job.title,
             job.links,
             status=status,
-            message=message,
-            list_url=self.writer.last_list_url or job.board_url,
-            write_url=self.writer.last_write_url,
-            post_url=self.writer.last_post_url if status == "success" else "",
+            message=localize_error_message(message) if status == "fail" else message,
+            list_url=w.last_list_url or job.board_url,
+            write_url=w.last_write_url,
+            post_url=w.last_post_url if status == "success" else "",
         )
         self.history.add(rec)
-        self.after(0, self._refresh_history_tree)
+        if status == "fail":
+            key = rec.board_key
+            if self.history.get_fail_count(key) == FAIL_SKIP_THRESHOLD:
+                skip_url = rec.post_url or rec.list_url or rec.board_url
+                self.after(
+                    0,
+                    lambda u=skip_url: self._log(
+                        f"[자동제외] {u} — 실패 {FAIL_SKIP_THRESHOLD}회 도달, 이후 배치에서 건너뜁니다",
+                        "info",
+                    ),
+                )
+        def _after_record() -> None:
+            self._refresh_history_tree()
+            self._sync_urls_pick_list(preserve_selection=True)
+            self._refresh_counts()
 
-    def _build_jobs_for_active_urls(self) -> list[PostJob]:
+        self.after(0, _after_record)
+
+    def _build_jobs_for_active_urls(self) -> list[PostJob] | list[TargetJob]:
         urls = self._active_job_urls()
         if not urls:
+            excluded_n = self.excluded_urls.count()
+            fail_skip_n = self._count_fail_skipped_urls()
+            if excluded_n or fail_skip_n:
+                parts = []
+                if excluded_n:
+                    parts.append(f"수동 제외 {excluded_n}건")
+                if fail_skip_n:
+                    parts.append(f"실패 {FAIL_SKIP_THRESHOLD}회 이상 자동제외 {fail_skip_n}건")
+                raise ValueError(
+                    f"작업할 URL이 없습니다. ({' · '.join(parts)} — 해당 URL은 배치에서 건너뜁니다.)"
+                )
             raise ValueError("작업할 URL을 선택하거나 목록에 URL을 입력해 주세요.")
         content_sets = self.sets_panel.get_content_sets()
+        mode = getattr(self, "write_mode_var", None)
+        mode_val = mode.get() if mode else "post"
+        if mode_val in ("auto", "comment"):
+            jobs, _analyses = build_target_jobs(
+                "\n".join(urls),
+                content_sets,
+                mode=mode_val,
+                titles_text=self._get_text("titles"),
+            )
+            if not jobs:
+                raise ValueError(
+                    f"작업 가능한 URL이 없습니다. (모드: {mode_val}) — URL 검사 탭에서 형식을 확인하세요."
+                )
+            return jobs
         return build_jobs(
             "\n".join(urls),
             content_sets,
@@ -1069,7 +1690,7 @@ class BacklinkApp(tk.Tk):
     def _preview_name(self) -> None:
         self._log(f"랜덤 이름: {random_english_name()}", "info")
 
-    def _validate_jobs(self) -> list[PostJob] | None:
+    def _validate_jobs(self) -> list[PostJob] | list[TargetJob] | None:
         try:
             jobs = self._build_jobs_for_active_urls()
             self._batch_jobs = jobs
@@ -1079,8 +1700,8 @@ class BacklinkApp(tk.Tk):
             messagebox.showwarning("입력 오류", str(e))
             return None
 
-    def _rebuild_jobs_for_next_round(self) -> list[PostJob] | None:
-        holder: list[list[PostJob] | None] = [None]
+    def _rebuild_jobs_for_next_round(self) -> list[PostJob] | list[TargetJob] | None:
+        holder: list[list[PostJob] | list[TargetJob] | None] = [None]
         err_holder: list[Exception | None] = [None]
         done = threading.Event()
 
@@ -1110,6 +1731,9 @@ class BacklinkApp(tk.Tk):
         self.status_var.set(msg or f"{cur}/{total}")
 
     def _log(self, msg: str, tag: str = "") -> None:
+        if self._window_moving:
+            self._log_pending.append((msg, tag))
+            return
         self.log_box.config(state="normal")
         if tag:
             self.log_box.insert("end", msg + "\n", tag)
@@ -1124,14 +1748,23 @@ class BacklinkApp(tk.Tk):
             self._log("[안내] 작업 중 — 취소 후 재시도", "info")
             return
         self.writer.reset_cancel()
+        self.comment_writer.reset_cancel()
+        self.wp_comment_writer.reset_cancel()
+        self.mt_comment_writer.reset_cancel()
+        self.zboard_writer.reset_cancel()
+        self.custom_bbs_writer.reset_cancel()
 
         def worker():
+            from browser_session import _reset_playwright_event_loop
+
+            _reset_playwright_event_loop()
             try:
                 result = fn()
                 self.after(0, lambda r=result: self._on_async_done(None, r, on_success))
             except Exception as e:
                 self.after(0, lambda err=e: self._on_async_done(err, None, on_success))
             finally:
+                self._close_all_writers()
                 self.after(0, lambda: self._set_busy(False))
 
         self._set_busy(True)
@@ -1149,6 +1782,11 @@ class BacklinkApp(tk.Tk):
 
     def _on_cancel(self) -> None:
         self.writer.cancel()
+        self.comment_writer.cancel()
+        self.wp_comment_writer.cancel()
+        self.mt_comment_writer.cancel()
+        self.zboard_writer.cancel()
+        self.custom_bbs_writer.cancel()
         self._busy = False
         self._set_busy(False)
         self.status_var.set("취소됨")
@@ -1166,11 +1804,93 @@ class BacklinkApp(tk.Tk):
             return True
         self.after(0, lambda: self._log(f"[대기] {label} {total // 60}분 {total % 60}초", "info"))
         for remaining in range(total, 0, -1):
-            if self.writer._cancelled:
+            if self._any_cancelled():
                 return False
             self.after(0, lambda r=remaining, lb=label: self.status_var.set(f"{lb} {r // 60}분{r % 60}초"))
             time.sleep(1)
         return True
+
+    def _post_writer_for(self, job: PostJob | TargetJob):
+        if isinstance(job, TargetJob) and job.kind == "zeroboard_post":
+            return self.zboard_writer
+        return self.writer
+
+    def _any_cancelled(self) -> bool:
+        return (
+            self.writer._cancelled
+            or self.comment_writer._cancelled
+            or self.wp_comment_writer._cancelled
+            or self.mt_comment_writer._cancelled
+            or self.zboard_writer._cancelled
+            or self.custom_bbs_writer._cancelled
+        )
+
+    def _close_all_writers(self) -> None:
+        """배치 건마다 Playwright·asyncio 루프 정리 (연속 작업 시 충돌 방지)."""
+        for w in (
+            self.writer,
+            self.comment_writer,
+            self.wp_comment_writer,
+            self.mt_comment_writer,
+            self.zboard_writer,
+            self.custom_bbs_writer,
+        ):
+            try:
+                w.close()
+            except Exception:
+                pass
+
+    def _execute_job(self, job: PostJob | TargetJob, *, auto_submit: bool) -> str:
+        self.writer.reset_cancel()
+        self.comment_writer.reset_cancel()
+        self.wp_comment_writer.reset_cancel()
+        self.mt_comment_writer.reset_cancel()
+        self.custom_bbs_writer.reset_cancel()
+        self.zboard_writer.reset_cancel()
+        links = _job_links(job)
+        idx = job.index - 1
+
+        if isinstance(job, TargetJob):
+            if job.action == "comment_gnuboard":
+                self.comment_writer.open_comment_page(job.url)
+                if auto_submit:
+                    return self.comment_writer.fill_and_submit_comment(links, post_index=idx)
+                return self.comment_writer.fill_comment(links, post_index=idx)
+            if job.action == "comment_wordpress":
+                self.wp_comment_writer.open_post(job.url)
+                if auto_submit:
+                    return self.wp_comment_writer.fill_and_submit_comment(links, post_index=idx)
+                return self.wp_comment_writer.fill_comment(links, post_index=idx)
+            if job.action == "comment_movable_type":
+                self.mt_comment_writer.open_post(job.url)
+                if auto_submit:
+                    return self.mt_comment_writer.fill_and_submit_comment(links, post_index=idx)
+                return self.mt_comment_writer.fill_comment(links, post_index=idx)
+            if job.action == "comment_custom_bbs":
+                self.custom_bbs_writer.open_post(job.url)
+                if auto_submit:
+                    return self.custom_bbs_writer.fill_and_submit_comment(links, post_index=idx)
+                return self.custom_bbs_writer.fill_comment(links, post_index=idx)
+            # post via board writer (그누보드 / 제로보드)
+            post_w = self._post_writer_for(job)
+            post_w.open_browser(job.url)
+            if auto_submit:
+                return post_w.fill_and_submit(
+                    job.title, links, category=job.category, post_index=idx,
+                )
+            return post_w.fill_form(
+                job.title, links, category=job.category, post_index=idx,
+            )
+
+        post_w = self._post_writer_for(job)
+        post_w.open_browser(job.board_url)
+        if auto_submit:
+            return post_w.fill_and_submit(
+                job.title, links, category=job.category, post_index=idx,
+            )
+        return post_w.fill_form(
+            job.title, links, category=job.category, post_index=idx,
+        )
 
     def _run_batch(self, *, auto_submit: bool) -> str:
         ok, fail = 0, 0
@@ -1188,44 +1908,43 @@ class BacklinkApp(tk.Tk):
                 self.after(0, lambda n=round_num, c=len(jobs): self._log(f"\n--- {n}회차 반복 ({c}건) ---", "head"))
 
             for idx, job in enumerate(jobs):
-                if self.writer._cancelled:
+                if self._any_cancelled():
                     break
 
                 picks = job.picks_summary
-                self.after(0, lambda j=job: self._set_progress(j.index - 1, j.total, j.label))
-                self.after(0, lambda j=job: self._log(f"\n══ {j.label} ══", "head"))
+                action_note = ""
+                if isinstance(job, TargetJob):
+                    action_note = f" [{job.action_label}]"
+                else:
+                    action_note = ""
+                self.after(0, lambda j=job, an=action_note: self._set_progress(j.index - 1, j.total, j.label + an))
+                self.after(0, lambda j=job, an=action_note: self._log(f"\n══ {j.label}{an} ══", "head"))
                 self.after(0, lambda p=picks: self._log(f"  {p}", "info"))
 
                 try:
-                    self.writer.open_browser(job.board_url)
-                    links = _job_links(job)
-                    if auto_submit:
-                        msg = self.writer.fill_and_submit(
-                            job.title, links, category=job.category, post_index=job.index - 1,
-                        )
-                    else:
-                        msg = self.writer.fill_form(
-                            job.title, links, category=job.category, post_index=job.index - 1,
-                        )
+                    msg = self._execute_job(job, auto_submit=auto_submit)
                     ok += 1
                     self.after(0, lambda m=msg: self._log(m, "ok"))
                     self._record_history(job, "success", msg)
                 except Exception as e:
                     fail += 1
-                    self.after(0, lambda er=str(e), j=job: self._log(f"✗ {j.label}: {er}", "err"))
+                    err_ko = localize_error_message(str(e))
+                    self.after(0, lambda er=err_ko, j=job: self._log(f"✗ {j.label}: {er}", "err"))
                     self._record_history(job, "fail", str(e))
+                finally:
+                    self._close_all_writers()
 
                 self.after(0, lambda j=job: self._set_progress(j.index, j.total, f"{j.index}/{j.total}"))
 
                 if (
                     idx < len(jobs) - 1
                     and self._write_post_interval_sec > 0
-                    and not self.writer._cancelled
+                    and not self._any_cancelled()
                 ):
                     if not self._sleep_writing(self._write_post_interval_sec, "다음 게시까지"):
                         break
 
-            if self.writer._cancelled or not self._write_continuous:
+            if self._any_cancelled() or not self._write_continuous:
                 break
             if not self._sleep_writing(self._write_repeat_interval_sec, "다음 회차까지"):
                 break
@@ -1235,10 +1954,23 @@ class BacklinkApp(tk.Tk):
         return f"════ 결과: 성공 {ok} / 실패 {fail} / 전체 {len(jobs)} ════"
 
     def _on_batch_auto(self) -> None:
+        if self.discoverer.is_running():
+            messagebox.showwarning(
+                "안내",
+                "게시판 수집이 진행 중입니다.\n수집을 중지한 뒤 배치 작성을 실행해 주세요.\n"
+                "(동시 실행 시 브라우저 엔진 충돌로 전체 실패할 수 있습니다.)",
+            )
+            return
         self._sync_urls_pick_list(preserve_selection=True)
+        fail_skip_n = self._count_fail_skipped_urls()
         jobs = self._validate_jobs()
         if not jobs:
             return
+        if fail_skip_n:
+            self._log(
+                f"[자동제외] 실패 {FAIL_SKIP_THRESHOLD}회 이상 URL {fail_skip_n}건 — 배치에서 제외됨",
+                "info",
+            )
         self._apply_write_schedule()
         if self._has_url_pick_selection():
             sel_note = f"\n체크한 {len(jobs)}개 URL만 작업"
@@ -1261,10 +1993,7 @@ class BacklinkApp(tk.Tk):
         job = jobs[0]
 
         def task():
-            self.writer.open_browser(job.board_url)
-            return self.writer.fill_form(
-                job.title, _job_links(job), category=job.category, post_index=job.index - 1,
-            )
+            return self._execute_job(job, auto_submit=False)
 
         self._log(f"--- 양식: {job.label} ---", "head")
         self._run_async(task)
@@ -1286,13 +2015,14 @@ class BacklinkApp(tk.Tk):
             self.after_cancel(self._save_after_id)
         self._save_app_state()
         self.writer.cancel()
-        self.writer.close()
+        self._close_all_writers()
         self.destroy()
 
 
 def main() -> None:
     from app_paths import is_frozen, migrate_legacy_data
 
+    bootstrap_before_tk()
     migrate_legacy_data()
 
     if is_frozen():

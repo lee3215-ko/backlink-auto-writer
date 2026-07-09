@@ -11,8 +11,12 @@ CONTENT_TEXTAREA_SELECTORS = [
     f"{WRITE_FORM} textarea#wr_content",
     f"{WRITE_FORM} textarea[name='wr_content']",
     f"{WRITE_FORM} textarea[name='content']",
+    'input[name="use_html"]',
+    'input#use_html',
     "#wr_content",
     'textarea[name="wr_content"]',
+    'textarea[name="memo"]',
+    'textarea#memo',
 ]
 
 SMARTEDITOR_IFRAME_SELECTORS = [
@@ -99,7 +103,7 @@ def _fill_textarea_js(page: Page, content: str) -> bool:
         ok = page.evaluate(
             """(content) => {
                 const targets = document.querySelectorAll(
-                    'textarea[name="wr_content"], input[name="wr_content"]'
+                    'textarea[name="wr_content"], input[name="wr_content"], textarea[name="memo"]'
                 );
                 if (!targets.length) return false;
                 targets.forEach(el => {

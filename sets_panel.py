@@ -68,7 +68,7 @@ class ContentSetsTab(ttk.Frame):
 
         tk.Label(
             bar,
-            text="세트마다 URL 1개 + 키워드 여러 개  →  한 게시글에 세트별 키워드 1개씩 앵커",
+            text="세트마다 백링크 URL 1개 + 키워드 여러 개 · URL은 https:// 포함 권장 (Netlify/Manus 등)",
             bg=COLORS["card"], fg=COLORS["muted"], font=(FONT, 8), padx=10,
         ).pack(anchor="w", pady=(0, 8))
 
@@ -88,6 +88,18 @@ class ContentSetsTab(ttk.Frame):
         self.tree.column("no", width=36, anchor="center")
         self.tree.column("url", width=280)
         self.tree.column("kw", width=56, anchor="center")
+
+        search_row = tk.Frame(left, bg=COLORS["card"])
+        search_row.pack(fill="x", pady=(0, 4))
+        tk.Label(search_row, text="검색", bg=COLORS["card"], fg=COLORS["muted"], font=(FONT, 9)).pack(side="left")
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *_: self._apply_search_filter())
+        tk.Entry(search_row, textvariable=self.search_var, font=(FONT_MONO, 9)).pack(
+            side="left", fill="x", expand=True, padx=6,
+        )
+        self.search_filter_label = tk.Label(search_row, text="", bg=COLORS["card"], fg=COLORS["accent"], font=(FONT, 8))
+        self.search_filter_label.pack(side="right")
+
         self.tree.pack(fill="both", expand=True, side="left")
         sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         sb.pack(side="right", fill="y")
@@ -126,6 +138,40 @@ class ContentSetsTab(ttk.Frame):
     def _add_set_data(self, url: str = "", keywords: str = "") -> None:
         self._data.append({"url": url, "keywords_text": keywords})
 
+    def _search_query(self) -> str:
+        return self.search_var.get().strip().lower() if hasattr(self, "search_var") else ""
+
+    def _matches_search(self, item: dict) -> bool:
+        q = self._search_query()
+        if not q:
+            return True
+        if q in item["url"].strip().lower():
+            return True
+        return q in item["keywords_text"].lower()
+
+    def _apply_search_filter(self) -> None:
+        if not hasattr(self, "search_var"):
+            return
+        visible = 0
+        for i, item in enumerate(self._data):
+            iid = str(i)
+            if not self.tree.exists(iid):
+                continue
+            if self._matches_search(item):
+                try:
+                    self.tree.reattach(iid, "", "end")
+                except tk.TclError:
+                    pass
+                visible += 1
+            else:
+                self.tree.detach(iid)
+        total = len(self._data)
+        q = self._search_query()
+        if q:
+            self.search_filter_label.configure(text=f"{visible}/{total}")
+        else:
+            self.search_filter_label.configure(text="")
+
     def _rebuild_tree(self, reselect: int | None = None) -> None:
         self.tree.delete(*self.tree.get_children())
         for i, item in enumerate(self._data):
@@ -135,6 +181,7 @@ class ContentSetsTab(ttk.Frame):
             iid = str(i)
             self.tree.insert("", "end", iid=iid, values=(i + 1, preview, f"{len(kws)}개"))
         self.count_var.set(f"{len(self._data)}개 세트")
+        self._apply_search_filter()
         if reselect is not None:
             self._set_tree_selection(reselect)
 

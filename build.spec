@@ -1,8 +1,15 @@
 # PyInstaller — 백링크 자동 글쓰기 (onedir)
+import os
+
+import certifi
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
-datas = []
+SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
+ICON_FILE = os.path.join(SPEC_DIR, "assets", "icon.ico")
+
+datas = [(ICON_FILE, "assets")] if os.path.isfile(ICON_FILE) else []
+datas += [(certifi.where(), "certifi")]
 binaries = []
 hiddenimports = [
     "tkinter",
@@ -15,6 +22,7 @@ hiddenimports = [
     "onnxruntime",
     "PIL",
     "numpy",
+    "certifi",
     "app_paths",
     "startup_update",
     "update_splash",
@@ -31,7 +39,7 @@ for pkg in ("ddddocr",):
 
 a = Analysis(
     ["main.py"],
-    pathex=["."],
+    pathex=[SPEC_DIR],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -63,6 +71,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON_FILE if os.path.isfile(ICON_FILE) else None,
 )
 
 coll = COLLECT(

@@ -76,11 +76,14 @@ class BoardProber:
         want = is_headless()
         if self.page and not self.page.is_closed() and self._launched_headless == want:
             return
+        from browser_session import chromium_launch_options
+
         self.close()
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=want)
+        self._browser = self._playwright.chromium.launch(**chromium_launch_options(headless=want))
         self._launched_headless = want
-        self.page = self._browser.new_page()
+        context = self._browser.new_context(no_viewport=not want)
+        self.page = context.new_page()
         self.page.set_default_timeout(self.timeout_ms)
         self.page.on("dialog", lambda dialog: dialog.accept())
 

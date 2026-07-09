@@ -14,6 +14,8 @@ HTML_INPUT_SELECTORS = [
     'input[id="wr_html"]',
     'input[type="checkbox"][value="html"]',
     'input[type="checkbox"][value="1"][name*="html" i]',
+    'input[name="use_html"]',
+    'input#use_html',
     'input[type="radio"][name*="html" i]',
     'input[type="radio"][value="html"]',
     'input[type="radio"][value="1"][name="html"]',

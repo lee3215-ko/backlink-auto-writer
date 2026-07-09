@@ -13,6 +13,8 @@ from editor_content import fill_editor_content
 from article_builder import build_article_content, build_article_plain, build_article_title
 from form_autofill import autofill_extra_fields
 from html_mode import ensure_html_mode
+from link_utils import pick_primary_link
+from page_guard import page_contains_backlink
 from faker import Faker
 from urllib.parse import urljoin
 
@@ -134,10 +136,12 @@ class BoardWriter:
   def __init__(self) -> None:
       self._playwright: Optional[Playwright] = None
       self._browser: Optional[Browser] = None
+      self._browser_context = None
       self.page: Optional[Page] = None
       self.last_name: str = ""
       self._cancelled: bool = False
       self._source_url: str = ""
+      self._stealth_profile_index: int = 0
       self.last_list_url: str = ""
       self.last_write_url: str = ""
       self.last_post_url: str = ""
@@ -153,14 +157,8 @@ class BoardWriter:
 
   def open_browser(self, url: str) -> str:
       """브라우저를 열고 URL로 이동. 글쓰기 폼이 아니면 글쓰기 링크 탐색."""
-      self.close()
-
-      self._playwright = sync_playwright().start()
-      self._browser = self._playwright.chromium.launch(headless=is_headless())
-      self.page = self._browser.new_page()
-      self.page.set_default_timeout(15000)
-      # 캡차 오류 alert 등이 뜨면 자동 닫기 — 미처리 시 프로그램 멈춤
-      self.page.on("dialog", lambda dialog: dialog.accept())
+      self.reset_cancel()
+      self._launch_stealth_page(default_timeout=15000)
 
       target = gnuboard_write_url(url) or url
       self._source_url = url
@@ -318,8 +316,9 @@ class BoardWriter:
               page.wait_for_timeout(1200)
               if self._is_submit_success():
                   self._capture_post_url()
+                  bl_note = self._verify_post_backlink(links, post_index=post_index)
                   return (
-                      f"{fill_msg}\n캡차 자동 성공 ({code}) → 글 등록 완료\n"
+                      f"{fill_msg}\n캡차 자동 성공 ({code}) → 글 등록 완료{bl_note}\n"
                       + "\n".join(ocr_logs)
                   )
 
@@ -340,23 +339,76 @@ class BoardWriter:
           + "\n".join(ocr_logs)
       )
 
+  def _dismiss_cookie_banners(self) -> None:
+      page = self.page
+      if not page:
+          return
+      for sel in (
+          'button:has-text("Accept")',
+          'button:has-text("Got it")',
+          'button:has-text("동의")',
+          'button:has-text("同意")',
+          ".cc-dismiss",
+      ):
+          try:
+              loc = page.locator(sel)
+              if loc.count() > 0 and loc.first.is_visible():
+                  loc.first.click(timeout=2000)
+                  page.wait_for_timeout(400)
+                  return
+          except Exception:
+              pass
+
   def close(self) -> None:
       """브라우저 및 Playwright 리소스 정리."""
-      if self._browser:
-          try:
-              self._browser.close()
-          except Exception:
-              pass
-          self._browser = None
+      from browser_session import close_browser_session
 
-      if self._playwright:
-          try:
-              self._playwright.stop()
-          except Exception:
-              pass
-          self._playwright = None
-
+      close_browser_session(self._browser, self._browser_context, self._playwright)
+      self._browser = None
+      self._browser_context = None
+      self._playwright = None
       self.page = None
+
+  def _launch_stealth_page(self, *, default_timeout: int = 15000, profile_index: int | None = None) -> None:
+      """WAF 회피용 브라우저 시작 (Firefox UA 우선)."""
+      from browser_session import launch_stealth_browser
+
+      if profile_index is not None:
+          self._stealth_profile_index = profile_index
+      self.close()
+      self._playwright = sync_playwright().start()
+      self._browser, self._browser_context, self.page = launch_stealth_browser(
+          self._playwright,
+          headless=is_headless(),
+          default_timeout=default_timeout,
+          profile_index=self._stealth_profile_index,
+      )
+
+  def _is_waf_blocked_page(self) -> bool:
+      page = self.page
+      if not page:
+          return False
+      try:
+          title = (page.title() or "").lower()
+      except Exception:
+          return False
+      if any(x in title for x in ("403", "forbidden", "access denied")):
+          return True
+      try:
+          body = page.locator("body").inner_text(timeout=2000).lower()[:800]
+          if "403 forbidden" in body or "access denied" in body:
+              return True
+      except Exception:
+          pass
+      return False
+
+  def _relaunch_alternate_stealth_profile(self, *, default_timeout: int = 15000) -> None:
+      """403 등 차단 시 다른 User-Agent 프로필로 재시작."""
+      from browser_session import STEALTH_PROFILES
+
+      self._stealth_profile_index = (self._stealth_profile_index + 1) % len(STEALTH_PROFILES)
+      log.info("UA 프로필 전환 (%d/%d)", self._stealth_profile_index + 1, len(STEALTH_PROFILES))
+      self._launch_stealth_page(default_timeout=default_timeout, profile_index=self._stealth_profile_index)
 
   def _has_write_form(self) -> bool:
       page = self.page
@@ -528,3 +580,27 @@ class BoardWriter:
       url = page.url
       if "wr_id=" in url.lower():
           self.last_post_url = url
+
+  def _verify_post_backlink(
+      self,
+      links: list[tuple[str, str]],
+      *,
+      post_index: int = 0,
+  ) -> str:
+      """등록된 글 페이지에서 백링크 href 확인."""
+      page = self.page
+      if not page or not self.last_post_url:
+          return ""
+      target_url, keyword = pick_primary_link(links, post_index=post_index)
+      if not target_url:
+          return ""
+      try:
+          page.goto(self.last_post_url, wait_until="domcontentloaded", timeout=15000)
+          page.wait_for_timeout(1200)
+          found, detail = page_contains_backlink(page, target_url, keyword=keyword)
+          if found:
+              return f" — 백링크 확인 ({detail})"
+          return " — 백링크 미확인 (HTML 모드·게시판 필터 확인)"
+      except Exception as e:
+          log.debug("백링크 검증 스킵: %s", e)
+          return ""

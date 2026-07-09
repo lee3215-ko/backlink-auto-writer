@@ -9,6 +9,18 @@ from datetime import datetime
 from pathlib import Path
 
 from batch_jobs import AnchorLink, normalize_board_url
+from error_messages import localize_error_message
+from app_constants import FAIL_SKIP_THRESHOLD
+
+
+def is_verified_success(record: PostRecord) -> bool:
+    """이력 success 중 실제 게시 확인된 건만 (미확인 '등록 시도 완료' 제외)."""
+    if record.status != "success":
+        return False
+    msg = record.message or ""
+    if "등록 시도 완료" in msg:
+        return False
+    return True
 
 from app_paths import data_file, migrate_legacy_data
 
@@ -66,6 +78,7 @@ class BoardSummary:
     board_url: str
     post_count: int
     success_count: int
+    fail_count: int
     last_at: str
     link_stats: list[tuple[str, str, int]]  # site, keyword, count
 
@@ -108,6 +121,75 @@ class PostHistory:
         self.records = []
         self.save()
 
+    def remove_board(self, board_key: str) -> int:
+        """해당 게시판 이력만 삭제. 삭제된 건수 반환."""
+        before = len(self.records)
+        self.records = [r for r in self.records if r.board_key != board_key]
+        removed = before - len(self.records)
+        if removed:
+            self.save()
+        return removed
+
+    def get_fail_reason_groups(self) -> list[tuple[str, int, list[tuple[str, str]]]]:
+        """실패 사유별 게시판 그룹 — (한글 사유, 개수, [(board_key, url), ...])."""
+        per_board: dict[str, tuple[str, str, str]] = {}
+        for key in {r.board_key for r in self.records}:
+            recs = self.get_records_for_board(key)
+            fails = [r for r in recs if r.status == "fail"]
+            if not fails:
+                continue
+            last = max(fails, key=lambda r: r.timestamp)
+            reason = localize_error_message(last.message)
+            url = last.post_url or last.list_url or last.board_url
+            per_board[key] = (reason, url, last.timestamp)
+
+        grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for key, (reason, url, _ts) in per_board.items():
+            grouped[reason].append((key, url))
+
+        out: list[tuple[str, int, list[tuple[str, str]]]] = []
+        for reason, boards in grouped.items():
+            boards.sort(key=lambda x: x[1])
+            out.append((reason, len(boards), boards))
+        out.sort(key=lambda x: (-x[1], x[0]))
+        return out
+
+    def board_keys_with_fail_reason(self, reason: str) -> list[str]:
+        for r, _n, boards in self.get_fail_reason_groups():
+            if r == reason:
+                return [k for k, _u in boards]
+        return []
+
+    def collect_urls_for_board(self, board_key: str) -> set[str]:
+        """이력에 저장된 URL 변형 수집 (글쓰기·목록·등록글)."""
+        urls: set[str] = set()
+        for r in self.get_records_for_board(board_key):
+            for u in (r.board_url, r.list_url, r.write_url, r.post_url):
+                if u and u.strip():
+                    urls.add(u.strip())
+        return urls
+
+    def get_fail_count(self, board_key: str) -> int:
+        return sum(
+            1
+            for r in self.records
+            if r.board_key == board_key
+            and (r.status == "fail" or (r.status == "success" and not is_verified_success(r)))
+        )
+
+    def boards_over_fail_limit(self, threshold: int = FAIL_SKIP_THRESHOLD) -> set[str]:
+        counts: dict[str, int] = defaultdict(int)
+        for r in self.records:
+            if r.status == "fail" or (r.status == "success" and not is_verified_success(r)):
+                counts[r.board_key] += 1
+        return {key for key, n in counts.items() if n >= threshold}
+
+    def is_fail_skipped(self, url: str, *, threshold: int = FAIL_SKIP_THRESHOLD) -> bool:
+        key = normalize_board_url(url)
+        if not key:
+            return False
+        return self.get_fail_count(key) >= threshold
+
     def get_summaries(self) -> list[BoardSummary]:
         grouped: dict[str, list[PostRecord]] = defaultdict(list)
         for r in self.records:
@@ -115,7 +197,8 @@ class PostHistory:
 
         summaries: list[BoardSummary] = []
         for key, recs in grouped.items():
-            success = [r for r in recs if r.status == "success"]
+            success = [r for r in recs if is_verified_success(r)]
+            fails = [r for r in recs if r.status == "fail" or (r.status == "success" and not is_verified_success(r))]
             counter: Counter[tuple[str, str]] = Counter()
             for r in recs:
                 if r.status != "success":
@@ -132,6 +215,7 @@ class PostHistory:
                     board_url=latest_url,
                     post_count=len(recs),
                     success_count=len(success),
+                    fail_count=len(fails),
                     last_at=last_at,
                     link_stats=sorted(counter.items(), key=lambda x: -x[1]),
                 )
@@ -151,14 +235,15 @@ class PostHistory:
         lines = [f"게시판: {board_key}", f"총 {len(recs)}회 등록 시도", ""]
         counter: Counter[tuple[str, str]] = Counter()
         for r in recs:
-            if r.status == "success":
-                for link in r.links:
-                    counter[(link["site_url"], link["keyword"])] += 1
+            if not is_verified_success(r):
+                continue
+            for link in r.links:
+                counter[(link["site_url"], link["keyword"])] += 1
 
         lines.append("=== 사이트·키워드별 등록 횟수 (성공) ===")
         board_by_link: dict[tuple[str, str], tuple[str, str, str]] = {}
         for r in recs:
-            if r.status != "success":
+            if not is_verified_success(r):
                 continue
             for link in r.links:
                 key = (link["site_url"], link["keyword"])
@@ -203,7 +288,8 @@ class PostHistory:
         lines.append("")
         lines.append("=== 등록 이력 ===")
         for r in reversed(recs[-50:]):
-            icon = "✓" if r.status == "success" else "✗"
+            verified = is_verified_success(r)
+            icon = "✓" if verified else ("△" if r.status == "success" else "✗")
             picks = " | ".join(
                 f"세트{lnk.get('set_index','?')}:{lnk['keyword']}" for lnk in r.links
             )
@@ -217,6 +303,9 @@ class PostHistory:
             elif not r.list_url and r.board_url:
                 lines.append(f"    URL: {r.board_url}")
             if r.status == "fail":
-                lines.append(f"    사유: {r.message[:120]}")
+                reason = localize_error_message(r.message)
+                lines.append(f"    사유: {reason[:200]}")
+            elif r.status == "success" and not verified:
+                lines.append(f"    사유: 미확인 제출 (페이지에 댓글·글 미표시 — 성공 아님)")
 
         return "\n".join(lines)

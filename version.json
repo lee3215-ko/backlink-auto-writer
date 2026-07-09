@@ -1,5 +1,10 @@
-﻿{
-    "version":  "1.0.2",
-    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip",
-    "notes":  "원고 자동 작성, 수집 중복 방지, 데이터 AppData 유지"
+{
+    "version": "1.0.4",
+    "url": "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip",
+    "download_url": "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.4/BacklinkWriter.zip",
+    "notes": "백링크 삽입 최적화, 아이콘, 자동 업데이트",
+    "download_urls": [
+        "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.4/BacklinkWriter.zip",
+        "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
+    ]
 }

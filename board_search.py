@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 from typing import Callable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 
 from app_logger import log
 from batch_jobs import parse_lines
@@ -33,32 +33,31 @@ CRAWL_SEED_SKIP_IN_PATH = (
     "/t/", "/jobs/", "/search", "/questions/", "/wiki/",
 )
 
-# GUI 예시 / 프리셋
+# GUI 예시 / 프리셋 (짧은 검색어 — 한글·따옴표 많은 쿼리는 검색엔진에서 실패함)
 SEARCH_PRESETS: dict[str, list[str]] = {
     "그누보드 기본": [
-        'inurl:"/bbs/board.php" "bo_table"',
-        'inurl:"board.php" "bo_table" 글쓰기',
-        'inurl:"write.php" "bo_table"',
+        "inurl:board.php bo_table site:kr",
+        "inurl:board.php bo_table site:co.kr",
+        "inurl:/bbs/board.php bo_table site:kr",
     ],
     "비회원·캡차": [
-        'inurl:board.php bo_table 비회원',
-        'inurl:board.php bo_table "wr_password"',
-        'inurl:board.php bo_table "자동등록방지"',
+        "inurl:board.php bo_table wr_password site:kr",
+        "inurl:board.php bo_table site:co.kr",
     ],
     "한국 사이트": [
-        'inurl:"/bbs/board.php" "bo_table" site:kr',
-        'inurl:"/bbs/board.php" "bo_table" site:co.kr',
-        'inurl:"/bbs/board.php" "bo_table" site:or.kr',
+        "inurl:board.php bo_table site:kr",
+        "inurl:board.php bo_table site:co.kr",
+        "inurl:board.php bo_table site:or.kr",
     ],
     "한국 키워드": [
-        'inurl:board.php bo_table 교회 site:kr',
-        'inurl:board.php bo_table 동아리 site:kr',
-        'inurl:board.php bo_table 비회원 site:kr',
+        "inurl:board.php bo_table free site:kr",
+        "inurl:board.php bo_table qna site:co.kr",
+        "inurl:board.php bo_table gallery site:kr",
     ],
     "확장": [
-        'inurl:"/bbs/board.php" "bo_table" "wr_subject"',
-        'inurl:"/bbs/write.php" "bo_table"',
-        'inurl:bo_table inurl:bbs filetype:php',
+        "inurl:board.php bo_table notice site:kr",
+        "inurl:board.php bo_table community site:co.kr",
+        "inurl:/bbs/board.php bo_table site:kr",
     ],
 }
 
@@ -160,9 +159,12 @@ def _search_playwright(query: str, max_results: int) -> list[str]:
 
     urls: list[str] = []
     try:
+        from browser_session import chromium_launch_options
+
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=is_headless())
-            page = browser.new_page()
+            browser = p.chromium.launch(**chromium_launch_options(headless=is_headless()))
+            context = browser.new_context(no_viewport=not is_headless())
+            page = context.new_page()
             page.goto(
                 f"https://html.duckduckgo.com/html/?q={quote(query)}",
                 wait_until="domcontentloaded",
