@@ -207,7 +207,8 @@ def build_comment_content(
 ) -> str:
     """
     댓글용 짧은 본문 — 링크 1개 (세트가 여러 개면 post_index로 순환).
-    style: auto | plain | smart | anchors | html
+    style: auto | plain | smart | anchors | html | bbcode
+      bbcode  — [url=...]keyword[/url] (phpBB 등)
       smart   — 키워드 + URL 별도 줄 (그누보드 자동링크 최적)
       anchors — <a> 앵커만 (WP·커스텀 BBS, HTML 허용 시)
       plain   — 키워드 + URL 별도 줄 (smart와 동일)
@@ -245,6 +246,13 @@ def build_comment_content(
     if use_style == "anchors":
         anchors = " ".join(_anchor(url, kw) for url, kw in cleaned)
         return f"{intro} {anchors} {closing}"
+
+    if use_style == "bbcode":
+        parts = [intro]
+        for url, kw in cleaned:
+            parts.append(f"[url={_norm_url(url)}]{kw}[/url]")
+        parts.append(closing)
+        return " ".join(parts)
 
     parts: list[str] = [intro]
     for url, kw in cleaned:

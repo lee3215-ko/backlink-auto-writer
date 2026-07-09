@@ -16,6 +16,15 @@ from board_url import (
     is_likely_zeroboard,
     normalize_board_list_url,
 )
+from forum_url import (
+    is_cafe24_board_list,
+    is_cafe24_board_read,
+    is_generic_comment_url,
+    is_guestbook_url,
+    is_phpbb_list_url,
+    is_phpbb_thread_url,
+    is_smf_thread_url,
+)
 
 KIND_LABEL = {
     "gnuboard_post": "그누보드 글쓰기",
@@ -23,6 +32,10 @@ KIND_LABEL = {
     "wordpress_comment": "워드프레스 댓글",
     "movable_type_comment": "Movable Type 댓글",
     "custom_bbs_comment": "커스텀 BBS 댓글",
+    "phpbb_comment": "phpBB 답글",
+    "smf_comment": "SMF 답글",
+    "generic_comment": "범용 댓글/방명록",
+    "cafe24_comment": "카페24 댓글",
     "zeroboard_post": "제로보드 글쓰기",
     "phpbb": "phpBB 포럼",
     "xenforo": "XenForo 포럼",
@@ -213,11 +226,38 @@ def classify_url(url: str) -> UrlAnalysis:
             f"제로보드/DQ BBS 글쓰기 (id={zid})",
         )
 
-    if "showthread.php" in low or "/forum/" in path and "memberlist" not in low:
-        return UrlAnalysis(url, "phpbb", False, False, "partial", "phpBB — 로그인·스팸필터로 자동화 어려움")
+    if is_phpbb_thread_url(url):
+        return UrlAnalysis(
+            url, "phpbb_comment", False, True, "comment",
+            "phpBB 글 — 게스트 답글 시도 (로그인·캡차 필요할 수 있음)",
+        )
 
-    if "/threads/" in path or "viewtopic" in low:
-        return UrlAnalysis(url, "xenforo", False, False, "partial", "포럼 — 회원 로그인 필요할 수 있음")
+    if is_smf_thread_url(url):
+        return UrlAnalysis(
+            url, "smf_comment", False, True, "comment",
+            "SMF 포럼 글 — 게스트 답글 시도",
+        )
+
+    if is_generic_comment_url(url) or is_guestbook_url(url):
+        return UrlAnalysis(
+            url, "generic_comment", False, True, "comment",
+            "comment.php / 방명록 — 댓글 시도",
+        )
+
+    if is_cafe24_board_read(url):
+        return UrlAnalysis(
+            url, "cafe24_comment", False, True, "comment",
+            "카페24 게시판 글 — 댓글 시도",
+        )
+
+    if is_phpbb_list_url(url) or is_cafe24_board_list(url):
+        return UrlAnalysis(
+            url, "phpbb", False, False, "partial",
+            "게시판 목록 페이지 — 글(showthread/viewtopic/read) URL 필요",
+        )
+
+    if "/threads/" in path and "viewtopic" not in low:
+        return UrlAnalysis(url, "xenforo", False, False, "partial", "XenForo — 회원 로그인 필요할 수 있음")
 
     if _is_custom_bbs_view_url(url):
         return UrlAnalysis(
@@ -282,3 +322,18 @@ def summarize_analyses(items: list[UrlAnalysis]) -> dict[str, int]:
     for a in items:
         counts[a.support_level] = counts.get(a.support_level, 0) + 1
     return counts
+
+
+WRITABLE_LEVELS = frozenset({"post", "comment"})
+
+
+def is_writable(analysis: UrlAnalysis) -> bool:
+    return analysis.support_level in WRITABLE_LEVELS
+
+
+def filter_unsupported(items: list[UrlAnalysis]) -> list[UrlAnalysis]:
+    return [a for a in items if not is_writable(a)]
+
+
+def unsupported_urls(items: list[UrlAnalysis]) -> list[str]:
+    return [a.url for a in filter_unsupported(items)]

@@ -2,7 +2,7 @@
 import os
 
 import certifi
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 block_cipher = None
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
@@ -28,6 +28,26 @@ hiddenimports = [
     "update_splash",
 ]
 
+# setuptools jaraco.text — pyi_rth_pkgres 가 Lorem ipsum.txt 를 읽음 (미포함 시 exe 시작 실패)
+try:
+    datas += collect_data_files("setuptools._vendor.jaraco.text")
+except Exception:
+    pass
+try:
+    import setuptools
+
+    _jaraco_txt = os.path.join(
+        os.path.dirname(setuptools.__file__),
+        "_vendor",
+        "jaraco",
+        "text",
+        "Lorem ipsum.txt",
+    )
+    if os.path.isfile(_jaraco_txt):
+        datas.append((_jaraco_txt, "setuptools/_vendor/jaraco/text"))
+except Exception:
+    pass
+
 for pkg in ("ddddocr",):
     try:
         tmp = collect_all(pkg)
@@ -46,7 +66,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["matplotlib", "pandas", "scipy", "IPython", "pytest"],
+    excludes=[
+        "matplotlib",
+        "pandas",
+        "scipy",
+        "IPython",
+        "pytest",
+        "pkg_resources",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

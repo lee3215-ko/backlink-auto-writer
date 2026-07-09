@@ -242,6 +242,16 @@ class BoardWriter:
       log.info("캡차 OCR: %s (%s)", code, detail)
 
       if not is_valid_gnuboard_captcha(code):
+          try:
+              from ai_assist import is_configured, solve_image_captcha_with_vision
+
+              if is_configured():
+                  vcode, vdetail = solve_image_captcha_with_vision(image_bytes)
+                  if vcode and is_valid_gnuboard_captcha(vcode):
+                      log.info("캡차 Vision OCR: %s (%s)", vcode, vdetail)
+                      return vcode, f"{detail} | {vdetail}"
+          except Exception as exc:
+              log.info("Vision 캡차 보조 실패: %s", exc)
           raise RuntimeError(f"캡차 인식 실패 (결과: {code!r}, {detail})")
       return code, detail
 

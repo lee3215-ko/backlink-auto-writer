@@ -27,7 +27,8 @@ function Read-DeployConfig {
 
 function Read-AppVersion($cfg) {
     $path = Join-Path $Root $cfg.version.file
-    $text = Get-Content $path -Raw
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $text = [System.IO.File]::ReadAllText($path, $utf8)
     $var = [regex]::Escape($cfg.version.variable)
     if ($text -match "${var}\s*=\s*`"([^`"]+)`"") {
         return $Matches[1]
@@ -37,7 +38,8 @@ function Read-AppVersion($cfg) {
 
 function Set-AppVersion($cfg, [string]$Version) {
     $path = Join-Path $Root $cfg.version.file
-    $text = Get-Content $path -Raw
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $text = [System.IO.File]::ReadAllText($path, $utf8)
     $var = [regex]::Escape($cfg.version.variable)
     $text = $text -replace "${var}\s*=\s*`"[^`"]+`"", "$($cfg.version.variable) = `"$Version`""
     Write-TextNoBom $path $text

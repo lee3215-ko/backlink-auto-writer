@@ -35,6 +35,11 @@ DEFAULT_STATE: dict = {
     },
     "window": {"geometry": "1120x860"},
     "browser": {"headless": False},
+    "ai": {
+        "openai_api_key": "",
+        "openai_api_base": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+    },
 }
 
 
@@ -54,6 +59,8 @@ def load_state() -> dict:
             state["window"].update(raw["window"])
         if isinstance(raw.get("browser"), dict):
             state.setdefault("browser", {}).update(raw["browser"])
+        if isinstance(raw.get("ai"), dict):
+            state.setdefault("ai", {}).update(raw["ai"])
         return state
     except Exception:
         return json.loads(json.dumps(DEFAULT_STATE))
@@ -113,6 +120,9 @@ def collect_from_app(app) -> dict:
 
     if hasattr(app, "headless_var"):
         state.setdefault("browser", {})["headless"] = bool(app.headless_var.get())
+
+    if hasattr(app, "ai_api_key_var"):
+        state.setdefault("ai", {})["openai_api_key"] = app.ai_api_key_var.get().strip()
 
     return state
 
@@ -195,3 +205,7 @@ def apply_to_app(app, state: dict | None = None) -> None:
         headless = bool(browser.get("headless", False))
         app.headless_var.set(headless)
         set_headless(headless)
+
+    ai = state.get("ai") or {}
+    if hasattr(app, "ai_api_key_var"):
+        app.ai_api_key_var.set(ai.get("openai_api_key", ""))

@@ -39,15 +39,21 @@
     "error_messages.py",
     "excluded_urls.py",
     "form_autofill.py",
+    "forum_url.py",
+    "generic_comment.py",
     "html_mode.py",
     "link_utils.py",
     "main.py",
     "movable_type_comment.py",
     "page_guard.py",
+    "page_snapshot.py",
+    "phpbb_comment.py",
     "post_history.py",
     "sets_panel.py",
     "startup_update.py",
     "target_jobs.py",
+    "unsupported_report.py",
+    "ai_assist.py",
     "update_splash.py",
     "updater.py",
     "update_ui.py",
@@ -63,7 +69,6 @@
     "build.spec",
     "assets/icon.ico",
     "deploy.bat",
-    "run.bat",
-    "시작.bat"
+    "run.bat"
   ]
 }

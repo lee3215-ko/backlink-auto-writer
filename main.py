@@ -18,12 +18,17 @@ from comment_writer import CommentWriter
 from post_history import PostHistory, PostRecord
 from excluded_urls import ExcludedUrlRegistry
 from target_jobs import TargetJob, build_target_jobs
-from url_analyzer import UrlAnalysis, analyze_urls, summarize_analyses
+from url_analyzer import UrlAnalysis, analyze_urls, filter_unsupported, summarize_analyses
+from unsupported_report import build_cursor_report, build_url_only_text, save_cursor_report
+from page_snapshot import capture_snapshots, snapshots_to_report_blocks
+from ai_assist import capabilities_summary, is_configured, login_spam_mitigation_tips, suggest_comment_form_selectors
 from url_recommend import recommend_urls
 from wordpress_comment import WordPressCommentWriter
 from movable_type_comment import MovableTypeCommentWriter
 from zeroboard_writer import ZeroBoardWriter
 from custom_bbs_comment import CustomBbsCommentWriter
+from phpbb_comment import PhpbbCommentWriter
+from generic_comment import GenericCommentWriter
 from board_catalog import STATUS_LABEL, BoardCatalog
 from board_discoverer import BoardDiscoverer, DiscovererStats
 from board_search import SEARCH_PRESETS, preset_text
@@ -75,6 +80,8 @@ class BacklinkApp(tk.Tk):
         self.mt_comment_writer = MovableTypeCommentWriter()
         self.zboard_writer = ZeroBoardWriter()
         self.custom_bbs_writer = CustomBbsCommentWriter()
+        self.phpbb_comment_writer = PhpbbCommentWriter()
+        self.generic_comment_writer = GenericCommentWriter()
         self.history = PostHistory()
         self.excluded_urls = ExcludedUrlRegistry()
         self.catalog = BoardCatalog()
@@ -740,29 +747,35 @@ class BacklinkApp(tk.Tk):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="  URL 검사 · 댓글  ")
 
-        top = ttk.Frame(tab)
-        top.pack(fill="both", expand=True, padx=8, pady=8)
+        outer = ttk.PanedWindow(tab, orient="vertical")
+        outer.pack(fill="both", expand=True, padx=8, pady=8)
+
+        top = ttk.Frame(outer)
+        outer.add(top, weight=3)
 
         ttk.Label(
             top,
-            text="URL을 붙여넣고 검사 — 그누보드(글/댓글), 워드프레스 댓글 지원 · 블로그·해외 포럼은 대부분 불가",
+            text="URL 붙여넣기 → 검사 · 목록에서 Ctrl+C로 URL 복사 · 미지원 URL은 아래에 정리 후 Cursor에 전달",
             style="Hint.TLabel",
         ).pack(anchor="w")
 
-        self.check_url_box = scrolledtext.ScrolledText(top, height=10, font=(FONT_MONO, 9))
+        self.check_url_box = scrolledtext.ScrolledText(top, height=6, font=(FONT_MONO, 9))
         self.check_url_box.pack(fill="both", expand=True, pady=6)
 
         btn_row = ttk.Frame(top)
         btn_row.pack(fill="x", pady=4)
         ttk.Button(btn_row, text="URL 일괄 검사", command=self._on_check_urls).pack(side="left", padx=(0, 6))
         ttk.Button(btn_row, text="지원 URL → 글작성 탭", command=self._send_checked_to_write).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_row, text="미지원 URL 복사", command=self._on_check_copy_unsupported).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_row, text="Cursor용 보고서 저장", command=self._on_check_save_report).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_row, text="선택 URL 페이지 분석", command=self._on_check_page_probe).pack(side="left", padx=(0, 6))
         self.check_summary_var = tk.StringVar(value="검사 대기")
         ttk.Label(btn_row, textvariable=self.check_summary_var, style="Count.TLabel").pack(side="left", padx=12)
 
         tree_f = ttk.Frame(top)
         tree_f.pack(fill="both", expand=True)
         cols = ("support", "kind", "url", "note")
-        self.check_tree = ttk.Treeview(tree_f, columns=cols, show="headings", height=14)
+        self.check_tree = ttk.Treeview(tree_f, columns=cols, show="headings", height=10)
         self.check_tree.heading("support", text="지원")
         self.check_tree.heading("kind", text="유형")
         self.check_tree.heading("url", text="URL")
@@ -775,12 +788,144 @@ class BacklinkApp(tk.Tk):
         sb = ttk.Scrollbar(tree_f, orient="vertical", command=self.check_tree.yview)
         sb.pack(side="right", fill="y")
         self.check_tree.configure(yscrollcommand=sb.set)
+        self.check_tree.bind("<Control-c>", self._on_check_copy)
+        self.check_tree.bind("<Control-C>", self._on_check_copy)
         self._check_analyses: list[UrlAnalysis] = []
+        self._check_snapshots: list[dict] = []
+
+        bottom = ttk.LabelFrame(outer, text="미지원 · 부분 가능 (Cursor 전달용)", style="Card.TLabelframe", padding=6)
+        outer.add(bottom, weight=2)
+
+        self.check_unsupported_box = scrolledtext.ScrolledText(bottom, height=6, font=(FONT_MONO, 9))
+        self.check_unsupported_box.pack(fill="both", expand=True)
+        self.check_unsupported_box.configure(state="disabled")
+
+        ai_row = ttk.Frame(bottom, style="Card.TFrame")
+        ai_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(ai_row, text="OpenAI API 키 (선택 — 캡차 Vision·폼 분석)", style="Hint.TLabel").pack(side="left")
+        self.ai_api_key_var = tk.StringVar()
+        ai_entry = ttk.Entry(ai_row, textvariable=self.ai_api_key_var, width=36, show="*")
+        ai_entry.pack(side="left", padx=6)
+        ai_entry.bind("<KeyRelease>", lambda _e: self._schedule_save())
+        self.check_ai_hint_var = tk.StringVar(value=capabilities_summary())
+        ttk.Label(bottom, textvariable=self.check_ai_hint_var, style="Hint.TLabel", wraplength=900).pack(anchor="w", pady=(4, 0))
+
+    def _check_selected_analyses(self) -> list[UrlAnalysis]:
+        out: list[UrlAnalysis] = []
+        for iid in self.check_tree.selection():
+            try:
+                idx = int(iid)
+                if 0 <= idx < len(self._check_analyses):
+                    out.append(self._check_analyses[idx])
+            except ValueError:
+                continue
+        return out
+
+    def _on_check_copy(self, _event=None) -> str:
+        items = self._check_selected_analyses()
+        if not items:
+            return "break"
+        urls = [a.url for a in items]
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(urls))
+        self.update_idletasks()
+        n = len(urls)
+        self._show_toast(f"URL {n}개 복사" if n > 1 else "URL 복사됨")
+        return "break"
+
+    def _refresh_check_unsupported_box(self) -> None:
+        self.check_unsupported_box.configure(state="normal")
+        self.check_unsupported_box.delete("1.0", "end")
+        unsupported = filter_unsupported(self._check_analyses)
+        if not unsupported:
+            self.check_unsupported_box.insert("1.0", "(미지원·부분 가능 URL 없음)")
+        else:
+            lines = []
+            for a in unsupported:
+                lines.append(f"[{a.support_label}] {a.kind_label}")
+                lines.append(a.url)
+                lines.append(f"  → {a.note}")
+                lines.append("")
+            self.check_unsupported_box.insert("1.0", "\n".join(lines).rstrip())
+        self.check_unsupported_box.configure(state="disabled")
+        self.check_ai_hint_var.set(capabilities_summary())
+
+    def _on_check_copy_unsupported(self) -> None:
+        if not self._check_analyses:
+            self._on_check_urls()
+        text = build_url_only_text(self._check_analyses)
+        if not text:
+            messagebox.showinfo("안내", "미지원·부분 가능 URL이 없습니다.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update_idletasks()
+        n = len(text.splitlines())
+        self._show_toast(f"미지원 URL {n}개 복사됨")
+
+    def _on_check_save_report(self) -> None:
+        if not self._check_analyses:
+            self._on_check_urls()
+        unsupported = filter_unsupported(self._check_analyses)
+        if not unsupported:
+            messagebox.showinfo("안내", "저장할 미지원 URL이 없습니다.")
+            return
+        path = save_cursor_report(self._check_analyses, snapshots=self._check_snapshots or None)
+        report = build_cursor_report(self._check_analyses, snapshots=self._check_snapshots or None)
+        self.clipboard_clear()
+        self.clipboard_append(report)
+        self.update_idletasks()
+        self._show_toast(f"보고서 저장·클립보드 복사 ({path.name})")
+
+    def _on_check_page_probe(self) -> None:
+        selected = self._check_selected_analyses()
+        if not selected:
+            if not self._check_analyses:
+                self._on_check_urls()
+            selected = filter_unsupported(self._check_analyses)[:5]
+        if not selected:
+            messagebox.showinfo("안내", "분석할 URL이 없습니다. 목록에서 선택하거나 미지원 URL을 검사하세요.")
+            return
+        urls = [a.url for a in selected[:8]]
+        self.check_summary_var.set(f"페이지 분석 중… ({len(urls)}건)")
+        self.update_idletasks()
+
+        def worker() -> None:
+            try:
+                snaps = capture_snapshots(urls)
+                blocks = snapshots_to_report_blocks(snaps)
+                for snap in snaps:
+                    tips, err = login_spam_mitigation_tips(snap.text_block())
+                    if tips:
+                        blocks.append({"text_block": f"--- 대응 팁: {snap.url} ---\n{tips}"})
+                    if is_configured() and snap.comment_form_found:
+                        sel, sel_err = suggest_comment_form_selectors(snap.text_block())
+                        if sel:
+                            blocks.append({"text_block": f"--- 셀렉터 제안: {snap.url} ---\n{sel}"})
+                        if sel_err:
+                            log(f"셀렉터 제안: {sel_err}")
+                    if err:
+                        log(f"AI 분석: {err}")
+            except Exception as exc:
+                self.after(0, lambda: messagebox.showerror("오류", str(exc)))
+                self.after(0, lambda: self.check_summary_var.set("페이지 분석 실패"))
+                return
+
+            def done() -> None:
+                self._check_snapshots = blocks
+                path = save_cursor_report(self._check_analyses, snapshots=blocks)
+                self.check_summary_var.set(f"페이지 분석 완료 · {path.name}")
+                self._show_toast(f"페이지 분석 {len(snaps)}건 — 보고서 갱신됨")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_check_urls(self) -> None:
         text = self.check_url_box.get("1.0", "end")
         items = analyze_urls(parse_lines(text))
         self._check_analyses = items
+        self._check_snapshots = []
         for row in self.check_tree.get_children():
             self.check_tree.delete(row)
         for i, a in enumerate(items):
@@ -791,6 +936,7 @@ class BacklinkApp(tk.Tk):
             f"전체 {len(items)} · 게시글 {counts.get('post', 0)} · 댓글 {counts.get('comment', 0)} · "
             f"부분 {counts.get('partial', 0)} · 불가 {counts.get('no', 0)}"
         )
+        self._refresh_check_unsupported_box()
 
     def _send_checked_to_write(self) -> None:
         if not self._check_analyses:
@@ -1619,6 +1765,10 @@ class BacklinkApp(tk.Tk):
             w = self.mt_comment_writer
         elif isinstance(job, TargetJob) and job.action == "comment_custom_bbs":
             w = self.custom_bbs_writer
+        elif isinstance(job, TargetJob) and job.action == "comment_phpbb":
+            w = self.phpbb_comment_writer
+        elif isinstance(job, TargetJob) and job.action == "comment_generic":
+            w = self.generic_comment_writer
         elif isinstance(job, TargetJob) and job.kind == "zeroboard_post":
             w = self.zboard_writer
         rec = PostRecord.from_job(
@@ -1823,6 +1973,8 @@ class BacklinkApp(tk.Tk):
             or self.mt_comment_writer._cancelled
             or self.zboard_writer._cancelled
             or self.custom_bbs_writer._cancelled
+            or self.phpbb_comment_writer._cancelled
+            or self.generic_comment_writer._cancelled
         )
 
     def _close_all_writers(self) -> None:
@@ -1834,6 +1986,8 @@ class BacklinkApp(tk.Tk):
             self.mt_comment_writer,
             self.zboard_writer,
             self.custom_bbs_writer,
+            self.phpbb_comment_writer,
+            self.generic_comment_writer,
         ):
             try:
                 w.close()
@@ -1846,6 +2000,8 @@ class BacklinkApp(tk.Tk):
         self.wp_comment_writer.reset_cancel()
         self.mt_comment_writer.reset_cancel()
         self.custom_bbs_writer.reset_cancel()
+        self.phpbb_comment_writer.reset_cancel()
+        self.generic_comment_writer.reset_cancel()
         self.zboard_writer.reset_cancel()
         links = _job_links(job)
         idx = job.index - 1
@@ -1871,6 +2027,16 @@ class BacklinkApp(tk.Tk):
                 if auto_submit:
                     return self.custom_bbs_writer.fill_and_submit_comment(links, post_index=idx)
                 return self.custom_bbs_writer.fill_comment(links, post_index=idx)
+            if job.action == "comment_phpbb":
+                self.phpbb_comment_writer.open_post(job.url)
+                if auto_submit:
+                    return self.phpbb_comment_writer.fill_and_submit_comment(links, post_index=idx)
+                return self.phpbb_comment_writer.fill_comment(links, post_index=idx)
+            if job.action == "comment_generic":
+                self.generic_comment_writer.open_post(job.url)
+                if auto_submit:
+                    return self.generic_comment_writer.fill_and_submit_comment(links, post_index=idx)
+                return self.generic_comment_writer.fill_comment(links, post_index=idx)
             # post via board writer (그누보드 / 제로보드)
             post_w = self._post_writer_for(job)
             post_w.open_browser(job.url)

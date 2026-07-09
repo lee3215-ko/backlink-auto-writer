@@ -14,7 +14,7 @@ class TargetJob:
     index: int
     total: int
     url: str
-    action: str  # post | comment_gnuboard | comment_wordpress | comment_movable_type | comment_custom_bbs
+    action: str  # post | comment_gnuboard | comment_wordpress | ... | comment_phpbb | comment_generic
     kind: str
     title: str
     links: list[AnchorLink]
@@ -38,7 +38,7 @@ class TargetJob:
 
     @property
     def action_label(self) -> str:
-        return {"post": "게시글", "comment_gnuboard": "그누보드 댓글", "comment_wordpress": "WP 댓글", "comment_movable_type": "MT 댓글", "comment_custom_bbs": "BBS 댓글"}.get(
+        return {"post": "게시글", "comment_gnuboard": "그누보드 댓글", "comment_wordpress": "WP 댓글", "comment_movable_type": "MT 댓글", "comment_custom_bbs": "BBS 댓글", "comment_phpbb": "포럼 답글", "comment_generic": "범용 댓글"}.get(
             self.action, self.action
         )
 
@@ -97,30 +97,30 @@ def build_target_jobs(
     return jobs, analyses
 
 
+def _comment_action_for_kind(kind: str) -> str | None:
+    return {
+        "gnuboard_comment": "comment_gnuboard",
+        "wordpress_comment": "comment_wordpress",
+        "movable_type_comment": "comment_movable_type",
+        "custom_bbs_comment": "comment_custom_bbs",
+        "phpbb_comment": "comment_phpbb",
+        "smf_comment": "comment_phpbb",
+        "generic_comment": "comment_generic",
+        "cafe24_comment": "comment_generic",
+    }.get(kind)
+
+
 def _pick_action(analysis: UrlAnalysis, mode: str) -> str | None:
     if mode == "post":
         if analysis.support_post:
             return "post"
         return None
     if mode == "comment":
-        if analysis.kind == "gnuboard_comment":
-            return "comment_gnuboard"
-        if analysis.kind == "wordpress_comment":
-            return "comment_wordpress"
-        if analysis.kind == "movable_type_comment":
-            return "comment_movable_type"
-        if analysis.kind == "custom_bbs_comment":
-            return "comment_custom_bbs"
-        return None
+        return _comment_action_for_kind(analysis.kind)
     # auto
-    if analysis.kind == "gnuboard_comment":
-        return "comment_gnuboard"
-    if analysis.kind == "wordpress_comment":
-        return "comment_wordpress"
-    if analysis.kind == "movable_type_comment":
-        return "comment_movable_type"
-    if analysis.kind == "custom_bbs_comment":
-        return "comment_custom_bbs"
+    action = _comment_action_for_kind(analysis.kind)
+    if action:
+        return action
     if analysis.support_post:
         return "post"
     return None

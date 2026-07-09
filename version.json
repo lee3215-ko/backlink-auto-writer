@@ -1,13 +1,10 @@
 {
-    "version": "1.0.4",
-    "url": "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/471128559",
-    "download_url": "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.4/BacklinkWriter.zip",
-    "api_download_url": "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/471128559",
-    "asset_id": 471128559,
-    "notes": "백링크 삽입 최적화, 아이콘, 자동 업데이트",
-    "download_urls": [
-        "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/471128559",
-        "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.4/BacklinkWriter.zip",
-        "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
-    ]
+    "version":  "1.0.5",
+    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.5/BacklinkWriter.zip",
+    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.5/BacklinkWriter.zip",
+    "notes":  "한글 제목 수정, phpBB/comment.php/방명록 댓글 지원, URL 검사 Ctrl+C·미지원 보고서, PyInstaller 인코딩 수정",
+    "download_urls":  [
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.5/BacklinkWriter.zip",
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
+                      ]
 }
