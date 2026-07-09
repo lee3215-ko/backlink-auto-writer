@@ -7,7 +7,13 @@ import re
 # (영문/기술 패턴, 한글 설명) — 순서 중요 (긴 패턴 우선)
 _RULES: list[tuple[str, str]] = [
     (
-        r"It looks like you are using Playwright Sync API inside the asyncio loop",
+        r"Executable doesn't exist",
+        "내장 Chrome 없음 — ms-playwright 폴더 누락·백신 차단. zip 전체 재설치 또는 최신 버전 업데이트",
+    ),
+    (
+        r"BrowserType\.launch: Executable doesn't exist",
+        "내장 Chrome 없음 — exe 옆 ms-playwright\\chromium-*\\chrome.exe 확인",
+    ),
         "브라우저 엔진 충돌 (수집·배포 동시 실행 또는 환경 오류) — 수집 중지 후 재시도",
     ),
     (

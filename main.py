@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import app_paths  # noqa: F401 — exe 배포 시 PLAYWRIGHT_BROWSERS_PATH 설정
+
 import hashlib
 import threading
 import time
@@ -38,7 +40,7 @@ from sets_panel import ContentSetsTab
 from startup_update import try_startup_update
 from update_splash import UpdateSplash
 from update_ui import schedule_update_check
-from app_paths import is_frozen
+from app_paths import is_frozen, playwright_browsers_error_message, playwright_browsers_ready
 
 COLORS = {
     "bg": "#f0f4f8",
@@ -2186,7 +2188,7 @@ class BacklinkApp(tk.Tk):
 
 
 def main() -> None:
-    from app_paths import is_frozen, migrate_legacy_data
+    from app_paths import migrate_legacy_data
 
     bootstrap_before_tk()
     migrate_legacy_data()
@@ -2197,6 +2199,13 @@ def main() -> None:
             try_startup_update(on_status=splash.set_status)
         finally:
             splash.close()
+
+    if is_frozen() and not playwright_browsers_ready():
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("브라우저 없음", playwright_browsers_error_message())
+        root.destroy()
+        return
 
     BacklinkApp().mainloop()
 

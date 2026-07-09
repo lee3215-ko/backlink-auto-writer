@@ -60,3 +60,56 @@ def migrate_legacy_data() -> None:
                 shutil.copy2(src, dst)
         except OSError:
             pass
+
+
+def get_playwright_browsers_dir() -> Path:
+    """배포 zip에 포함된 Chromium (ms-playwright)."""
+    return get_install_dir() / "ms-playwright"
+
+
+def configure_playwright_env() -> Path | None:
+    """exe 실행 시 번들 브라우저 경로 지정 — 미설정 시 _internal 경로를 찾다 실패함."""
+    if not is_frozen():
+        return None
+    browsers = get_playwright_browsers_dir()
+    if browsers.is_dir():
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers)
+        return browsers
+    return None
+
+
+def find_chromium_executable() -> Path | None:
+    browsers = get_playwright_browsers_dir()
+    if not browsers.is_dir():
+        return None
+    for pattern in (
+        "chromium-*/chrome-win/chrome.exe",
+        "chromium_headless_shell-*/chrome-win/headless_shell.exe",
+    ):
+        matches = sorted(browsers.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def playwright_browsers_ready() -> bool:
+    if not is_frozen():
+        return True
+    return find_chromium_executable() is not None
+
+
+def playwright_browsers_error_message() -> str:
+    install = get_install_dir()
+    browsers = get_playwright_browsers_dir()
+    return (
+        "내장 Chrome(Playwright)을 찾을 수 없습니다.\n\n"
+        f"설치 폴더: {install}\n"
+        f"필요 경로: {browsers}\\chromium-*\\chrome-win\\chrome.exe\n\n"
+        "해결 방법:\n"
+        "1) 최신 BacklinkWriter.zip 을 다시 받아 전체 폴더를 덮어쓰기\n"
+        "2) ms-playwright 폴더가 exe 옆에 있는지 확인\n"
+        "3) 백신이 chrome.exe 를 차단했는지 확인 후 예외 등록"
+    )
+
+
+configure_playwright_env()
