@@ -130,6 +130,12 @@ class PostHistory:
             self.save()
         return removed
 
+    def get_recent_failures(self, limit: int = 50) -> list[PostRecord]:
+        """최신 실패 이력 (타임스탬프 역순)."""
+        fails = [r for r in self.records if r.status == "fail"]
+        fails.sort(key=lambda r: r.timestamp, reverse=True)
+        return fails[:limit]
+
     def get_fail_reason_groups(self) -> list[tuple[str, int, list[tuple[str, str]]]]:
         """실패 사유별 게시판 그룹 — (한글 사유, 개수, [(board_key, url), ...])."""
         per_board: dict[str, tuple[str, str, str]] = {}

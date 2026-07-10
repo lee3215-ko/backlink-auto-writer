@@ -48,6 +48,41 @@ _RULES: list[tuple[str, str]] = [
 ]
 
 
+def is_form_miss_error(message: str) -> bool:
+    """댓글/글쓰기 폼을 못 찾은 실패 — 스냅샷 업로드 우선 대상."""
+    if not message:
+        return False
+    text = message.strip()
+    keys = (
+        "댓글 폼",
+        "댓글 입력란",
+        "댓글 등록 버튼",
+        "글쓰기 폼",
+        "comment form",
+        "워드프레스 댓글 폼",
+        "Movable Type 댓글 폼",
+    )
+    return any(k.lower() in text.lower() for k in keys)
+
+
+def is_strengthenable_error(message: str) -> bool:
+    """원격 업로드해 기능 보강할 가치가 있는 실패."""
+    if not message:
+        return False
+    if is_form_miss_error(message):
+        return True
+    text = localize_error_message(message)
+    skip = (
+        "내장 Chrome 없음",
+        "브라우저 엔진 충돌",
+        "작업 취소",
+        "브라우저가 닫혔",
+        "브라우저 미실행",
+        "네트워크 오류",
+    )
+    return not any(s in text for s in skip)
+
+
 def localize_error_message(message: str) -> str:
     """이력·로그용 한글 사유 (기존 한글은 유지, 영문은 변환)."""
     if not message:

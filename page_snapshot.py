@@ -147,6 +147,138 @@ def _has_comment_form(forms: list[dict]) -> bool:
     return False
 
 
+_FORM_SCRIPT_ALL = """
+() => {
+  const forms = [];
+  for (const form of document.querySelectorAll('form')) {
+    const fields = [];
+    for (const el of form.querySelectorAll('input, textarea, select')) {
+      const type = (el.type || '').toLowerCase();
+      const style = window.getComputedStyle(el);
+      fields.push({
+        tag: el.tagName.toLowerCase(),
+        type: type,
+        name: el.name || '',
+        id: el.id || '',
+        placeholder: el.placeholder || '',
+        required: !!el.required,
+        visible: style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0',
+      });
+    }
+    forms.push({
+      action: form.action || '',
+      id: form.id || '',
+      name: form.name || '',
+      method: (form.method || 'get').toLowerCase(),
+      className: form.className || '',
+      fields,
+    });
+  }
+  return forms;
+}
+"""
+
+_DOM_MARKERS_SCRIPT = """
+() => {
+  const q = (s) => !!document.querySelector(s);
+  return {
+    '#comment': q('#comment'),
+    '#commentform': q('#commentform'),
+    '#comment-form': q('#comment-form'),
+    '#respond': q('#respond'),
+    '#comments': q('#comments'),
+    '#author': q('#author'),
+    '#email': q('#email'),
+    '#submit': q('#submit'),
+    "textarea[name=comment]": q('textarea[name="comment"]'),
+    'form.comment-form': q('form.comment-form'),
+    'textarea_count': document.querySelectorAll('textarea').length,
+    'form_count': document.querySelectorAll('form').length,
+    'wp-comments-post': (document.documentElement.innerHTML || '').includes('wp-comments-post'),
+  };
+}
+"""
+
+
+def capture_snapshot_from_page(page, url: str = "", *, include_hidden_fields: bool = True) -> PageSnapshot:
+    """이미 열린 Playwright page에서 스냅샷 (배치 실패 직후용 — 새 브라우저 안 띄움)."""
+    snap = PageSnapshot(url=(url or getattr(page, "url", "") or "").strip())
+    try:
+        snap.final_url = page.url or snap.url
+        snap.title = page.title() or ""
+        try:
+            body = page.locator("body").inner_text(timeout=4000).lower()
+        except Exception:
+            body = ""
+        snap.body_excerpt = body[:500]
+
+        for hint in LOGIN_HINTS:
+            if hint.lower() in body or hint.lower() in (snap.final_url or "").lower():
+                snap.login_hints.append(hint)
+        snap.login_required = bool(snap.login_hints) or "login" in (snap.final_url or "").lower()
+
+        try:
+            html_low = page.content().lower()
+        except Exception:
+            html_low = ""
+        for hint in SPAM_HINTS:
+            if hint in body or hint in html_low:
+                snap.spam_hints.append(hint)
+
+        snap.captcha_type = _detect_captcha(page)
+
+        script = _FORM_SCRIPT_ALL if include_hidden_fields else _FORM_SCRIPT
+        try:
+            forms = page.evaluate(script)
+            snap.forms = forms if isinstance(forms, list) else []
+        except Exception as exc:
+            snap.error = f"폼 추출 실패: {exc}"
+            snap.forms = []
+
+        snap.comment_form_found = _has_comment_form(snap.forms)
+        # 숨김 필드만 있어도 WP 표준 폼이면 있음으로
+        if not snap.comment_form_found:
+            try:
+                markers = page.evaluate(_DOM_MARKERS_SCRIPT)
+                if isinstance(markers, dict) and (
+                    markers.get("#commentform")
+                    or markers.get("#comment-form")
+                    or markers.get("textarea[name=comment]")
+                    or markers.get("#comment")
+                ):
+                    snap.comment_form_found = True
+            except Exception:
+                pass
+    except Exception as exc:
+        snap.error = str(exc)[:200]
+    return snap
+
+
+def capture_dom_markers(page) -> dict:
+    try:
+        markers = page.evaluate(_DOM_MARKERS_SCRIPT)
+        return markers if isinstance(markers, dict) else {}
+    except Exception:
+        return {}
+
+
+def capture_html_excerpt(page, *, max_chars: int = 40000) -> str:
+    try:
+        html = page.content() or ""
+    except Exception:
+        return ""
+    if len(html) <= max_chars:
+        return html
+    # 댓글 영역 우선
+    low = html.lower()
+    for key in ("id=\"respond\"", "id=\"commentform\"", "id='commentform'", "comment-form"):
+        idx = low.find(key)
+        if idx >= 0:
+            start = max(0, idx - 2000)
+            return html[start : start + max_chars]
+    return html[:max_chars]
+
+
 def capture_page_snapshot(url: str, *, timeout_ms: int = 15000) -> PageSnapshot:
     url = url.strip()
     snap = PageSnapshot(url=url)

@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
 from app_constants import APP_DISPLAY_NAME, APP_VERSION, FAIL_SKIP_THRESHOLD, UPDATE_VERSION_URL
-from error_messages import localize_error_message
+from error_messages import is_form_miss_error, is_strengthenable_error, localize_error_message
 from app_logger import log
 from app_state import apply_to_app, collect_from_app, save_state
 from batch_jobs import PostJob, build_jobs, parse_lines, normalize_board_url
@@ -22,7 +22,13 @@ from excluded_urls import ExcludedUrlRegistry
 from target_jobs import TargetJob, build_target_jobs
 from url_analyzer import UrlAnalysis, analyze_urls, filter_unsupported, summarize_analyses
 from unsupported_report import build_cursor_report, build_url_only_text, save_cursor_report
-from page_snapshot import capture_snapshots, snapshots_to_report_blocks
+from page_snapshot import (
+    capture_dom_markers,
+    capture_html_excerpt,
+    capture_snapshot_from_page,
+    capture_snapshots,
+    snapshots_to_report_blocks,
+)
 from ai_assist import capabilities_summary, is_configured, login_spam_mitigation_tips, suggest_comment_form_selectors
 from url_recommend import recommend_urls
 from wordpress_comment import WordPressCommentWriter
@@ -43,10 +49,16 @@ from update_ui import schedule_update_check
 from app_paths import is_frozen, playwright_browsers_error_message, playwright_browsers_ready
 from log_sync import (
     LogSyncConfig,
+    build_failure_case,
+    failure_case_to_cursor_report,
     fetch_client_log,
+    fetch_failure_case,
     get_pc_id,
     list_client_logs,
+    list_failure_cases,
     load_last_sync,
+    upload_failure_case,
+    upload_failure_cases,
     upload_latest_log,
 )
 
@@ -124,6 +136,9 @@ class BacklinkApp(tk.Tk):
         self._discover_log_pending: list[str] = []
         self._log_sync_after_id: str | None = None
         self._log_sync_uploading = False
+        self._failure_uploading = False
+        self._remote_failure_cases: list = []
+        self._remote_failure_detail: dict | None = None
 
         self._setup_styles()
         self._build_ui()
@@ -1149,6 +1164,7 @@ class BacklinkApp(tk.Tk):
         self.history_delete_btn.pack(side="right", padx=4)
         ttk.Button(top, text="실패 사유 삭제", command=self._open_fail_reason_delete_dialog).pack(side="right", padx=2)
         ttk.Button(top, text="동일 사유 선택", command=self._history_select_same_fail_reason).pack(side="right", padx=2)
+        ttk.Button(top, text="실패 원격 업로드", command=self._on_history_upload_failures).pack(side="right", padx=2)
         ttk.Button(top, text="선택 해제", command=self._history_pick_clear).pack(side="right", padx=2)
         ttk.Button(top, text="전체 선택", command=self._history_pick_all).pack(side="right", padx=2)
         self.history_pick_count_var = tk.StringVar(value="")
@@ -1774,7 +1790,7 @@ class BacklinkApp(tk.Tk):
         hint = ttk.Label(
             tab,
             text=(
-                "이용자 PC 로그를 GitHub private 저장소에 올리고, 관리자 PC에서 조회합니다. "
+                "이용자 PC 로그·실패 케이스를 GitHub에 올리고, 관리자 PC에서 조회·Cursor 보강에 사용합니다. "
                 f"이 PC ID: {get_pc_id()}"
             ),
             style="Hint.TLabel",
@@ -1792,6 +1808,14 @@ class BacklinkApp(tk.Tk):
             variable=self.log_sync_enabled_var,
             command=self._on_log_sync_settings_changed,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+
+        self.log_sync_failures_auto_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            cfg_f,
+            text="실패 케이스 자동 업로드 (폼 못 찾음 등)",
+            variable=self.log_sync_failures_auto_var,
+            command=self._on_log_sync_settings_changed,
+        ).grid(row=0, column=2, columnspan=3, sticky="w", pady=2)
 
         ttk.Label(cfg_f, text="Owner").grid(row=1, column=0, sticky="w", pady=2)
         self.log_sync_owner_var = tk.StringVar(value="lee3215-ko")
@@ -1825,7 +1849,13 @@ class BacklinkApp(tk.Tk):
         ttk.Button(btn_row, text="지금 이 PC 로그 업로드", command=self._on_log_sync_upload_now).pack(
             side="left", padx=(0, 6)
         )
+        ttk.Button(btn_row, text="실패 케이스 업로드", command=self._on_upload_local_failures).pack(
+            side="left", padx=(0, 6)
+        )
         ttk.Button(btn_row, text="원격 PC 목록 새로고침", command=self._on_remote_logs_refresh).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(btn_row, text="원격 실패 목록", command=self._on_remote_failures_refresh).pack(
             side="left", padx=(0, 6)
         )
         self.log_sync_detail_var = tk.StringVar(value="동기화 대기")
@@ -1834,9 +1864,9 @@ class BacklinkApp(tk.Tk):
         )
 
         help_txt = (
-            "1) GitHub에 private 저장소 backlink-writer-logs 생성  "
-            "2) Fine-grained PAT (Contents Read/Write) 발급  "
-            "3) 토큰을 관리자·이용자 PC에 동일 입력"
+            "1) GitHub private 저장소 backlink-writer-logs + PAT(Contents)  "
+            "2) 이용자 PC: 로그·실패 자동 업로드 켜기  "
+            "3) 관리자: 원격 실패 목록 → Cursor 보고서로 기능 보강"
         )
         ttk.Label(cfg_f, text=help_txt, style="Hint.TLabel", wraplength=980).grid(
             row=4, column=0, columnspan=5, sticky="w", pady=(8, 0)
@@ -1845,8 +1875,11 @@ class BacklinkApp(tk.Tk):
         body = ttk.PanedWindow(tab, orient="horizontal")
         body.pack(fill="both", expand=True, padx=8, pady=8)
 
-        left = ttk.LabelFrame(body, text="원격 PC 목록", style="Card.TLabelframe", padding=4)
-        body.add(left, weight=1)
+        left_nb = ttk.Notebook(body)
+        body.add(left_nb, weight=1)
+
+        left = ttk.Frame(left_nb, padding=4)
+        left_nb.add(left, text="PC 로그")
         cols = ("pc", "size")
         self.remote_log_tree = ttk.Treeview(left, columns=cols, show="headings", height=14)
         self.remote_log_tree.heading("pc", text="PC ID")
@@ -1859,12 +1892,34 @@ class BacklinkApp(tk.Tk):
         self.remote_log_tree.configure(yscrollcommand=sb.set)
         self.remote_log_tree.bind("<<TreeviewSelect>>", self._on_remote_log_select)
 
-        right = ttk.LabelFrame(body, text="로그 내용", style="Card.TLabelframe", padding=4)
+        fail_left = ttk.Frame(left_nb, padding=4)
+        left_nb.add(fail_left, text="실패 케이스")
+        fcols = ("pc", "reason", "url")
+        self.remote_fail_tree = ttk.Treeview(fail_left, columns=fcols, show="headings", height=14)
+        self.remote_fail_tree.heading("pc", text="PC")
+        self.remote_fail_tree.heading("reason", text="사유")
+        self.remote_fail_tree.heading("url", text="URL")
+        self.remote_fail_tree.column("pc", width=100)
+        self.remote_fail_tree.column("reason", width=140)
+        self.remote_fail_tree.column("url", width=180)
+        self.remote_fail_tree.pack(fill="both", expand=True, side="left")
+        fsb = ttk.Scrollbar(fail_left, orient="vertical", command=self.remote_fail_tree.yview)
+        fsb.pack(side="right", fill="y")
+        self.remote_fail_tree.configure(yscrollcommand=fsb.set)
+        self.remote_fail_tree.bind("<<TreeviewSelect>>", self._on_remote_failure_select)
+
+        right = ttk.LabelFrame(body, text="내용", style="Card.TLabelframe", padding=4)
         body.add(right, weight=3)
         rbtn = ttk.Frame(right)
         rbtn.pack(fill="x", pady=(0, 4))
         ttk.Button(rbtn, text="클립보드 복사", command=self._on_remote_log_copy).pack(side="left", padx=(0, 6))
-        ttk.Button(rbtn, text="파일로 저장", command=self._on_remote_log_save).pack(side="left")
+        ttk.Button(rbtn, text="파일로 저장", command=self._on_remote_log_save).pack(side="left", padx=(0, 6))
+        ttk.Button(rbtn, text="Cursor 보고서 복사", command=self._on_remote_failure_cursor_copy).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(rbtn, text="Cursor 보고서 저장", command=self._on_remote_failure_cursor_save).pack(
+            side="left"
+        )
         self.remote_log_box = scrolledtext.ScrolledText(
             right, height=18, font=(FONT_MONO, 9),
             bg=COLORS["log_bg"], fg=COLORS["log_fg"], relief="flat", padx=8, pady=8,
@@ -1894,6 +1949,11 @@ class BacklinkApp(tk.Tk):
             repo=self.log_sync_repo_var.get().strip(),
             token=self.log_sync_token_var.get().strip(),
             interval_min=interval,
+            upload_failures_auto=bool(
+                self.log_sync_failures_auto_var.get()
+                if hasattr(self, "log_sync_failures_auto_var")
+                else True
+            ),
         )
 
     def _on_log_sync_settings_changed(self) -> None:
@@ -2060,6 +2120,259 @@ class BacklinkApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("저장 실패", str(exc))
 
+    def _writer_for_job(self, job: PostJob | TargetJob):
+        w = self.writer
+        if isinstance(job, TargetJob):
+            if job.action == "comment_gnuboard":
+                w = self.comment_writer
+            elif job.action == "comment_wordpress":
+                w = self.wp_comment_writer
+            elif job.action == "comment_movable_type":
+                w = self.mt_comment_writer
+            elif job.action == "comment_custom_bbs":
+                w = self.custom_bbs_writer
+            elif job.action == "comment_phpbb":
+                w = self.phpbb_comment_writer
+            elif job.action == "comment_generic":
+                w = self.generic_comment_writer
+            elif job.kind == "zeroboard_post":
+                w = self.zboard_writer
+        return w
+
+    def _capture_failure_case(self, job: PostJob | TargetJob, raw_error: str) -> dict | None:
+        """브라우저가 아직 열린 상태에서 실패 케이스 JSON 구성."""
+        if not is_strengthenable_error(raw_error):
+            return None
+        w = self._writer_for_job(job)
+        url = getattr(job, "board_url", "") or ""
+        action = getattr(job, "action", "") if isinstance(job, TargetJob) else "post"
+        kind = getattr(job, "kind", "") if isinstance(job, TargetJob) else "board_post"
+        snap_dict: dict = {}
+        markers: dict = {}
+        html = ""
+        try:
+            if w.is_open() and w.page is not None:
+                snap = capture_snapshot_from_page(w.page, url)
+                snap_dict = snap.to_dict()
+                markers = capture_dom_markers(w.page)
+                if is_form_miss_error(raw_error) or snap.comment_form_found:
+                    html = capture_html_excerpt(w.page, max_chars=35000)
+        except Exception as exc:
+            snap_dict = {"error": f"스냅샷 실패: {exc}"}
+        return build_failure_case(
+            url=url,
+            raw_error=raw_error,
+            localized_reason=localize_error_message(raw_error),
+            action=str(action),
+            kind=str(kind),
+            app_version=APP_VERSION,
+            writer_urls={
+                "list_url": getattr(w, "last_list_url", "") or "",
+                "write_url": getattr(w, "last_write_url", "") or "",
+                "final_url": (w.page.url if w.is_open() and w.page else "") or "",
+            },
+            snapshot=snap_dict,
+            dom_markers=markers,
+            html_excerpt=html,
+            note="batch_fail",
+        )
+
+    def _queue_failure_case_upload(self, case: dict | None) -> None:
+        if not case:
+            return
+        cfg = self._get_log_sync_config()
+        if not cfg.can_upload():
+            return
+        if not cfg.upload_failures_auto:
+            return
+
+        def worker() -> None:
+            ok, msg = upload_failure_case(cfg, case)
+
+            def done() -> None:
+                if ok:
+                    self._log(f"[실패업로드] {msg}", "info")
+                else:
+                    self._log(f"[실패업로드] {msg}", "err")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_upload_local_failures(self) -> None:
+        cfg = self._get_log_sync_config()
+        if not cfg.token:
+            messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
+            return
+        fails = self.history.get_recent_failures(40)
+        if not fails:
+            messagebox.showinfo("안내", "업로드할 실패 이력이 없습니다.")
+            return
+        cases = []
+        for r in fails:
+            if not is_strengthenable_error(r.message):
+                continue
+            cases.append(
+                build_failure_case(
+                    url=r.post_url or r.list_url or r.board_url,
+                    raw_error=r.message,
+                    localized_reason=localize_error_message(r.message),
+                    action="",
+                    kind="",
+                    app_version=APP_VERSION,
+                    writer_urls={"list_url": r.list_url, "write_url": r.write_url},
+                    note=f"history:{r.timestamp}",
+                )
+            )
+        if not cases:
+            messagebox.showinfo("안내", "보강 대상 실패(폼 미인식 등)가 없습니다.")
+            return
+        if not messagebox.askyesno(
+            "실패 케이스 업로드",
+            f"최근 실패 {len(cases)}건을 원격 저장소에 올릴까요?\n"
+            "(이력 기반 — 페이지 스냅샷은 배치 실패 시에만 포함)",
+        ):
+            return
+        self._upload_failure_cases_async(cases, silent=False)
+
+    def _on_history_upload_failures(self) -> None:
+        self._on_upload_local_failures()
+
+    def _upload_failure_cases_async(self, cases: list[dict], *, silent: bool = True) -> None:
+        cfg = self._get_log_sync_config()
+        if not cfg.can_upload() or not cases:
+            return
+        if self._failure_uploading:
+            return
+        self._failure_uploading = True
+
+        def worker() -> None:
+            ok_n, fail_n, last = upload_failure_cases(cfg, cases)
+
+            def done() -> None:
+                self._failure_uploading = False
+                msg = f"실패 케이스 업로드 성공 {ok_n} / 실패 {fail_n}"
+                if hasattr(self, "log_sync_detail_var"):
+                    self.log_sync_detail_var.set(msg)
+                if not silent:
+                    if fail_n and not ok_n:
+                        messagebox.showerror("업로드 실패", last or msg)
+                    else:
+                        self._show_toast(msg)
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_remote_failures_refresh(self) -> None:
+        cfg = self._get_log_sync_config()
+        if not cfg.token:
+            messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
+            return
+        self.log_sync_detail_var.set("원격 실패 목록 불러오는 중…")
+
+        def worker() -> None:
+            entries, err = list_failure_cases(cfg)
+
+            def done() -> None:
+                self._remote_failure_cases = entries
+                for row in self.remote_fail_tree.get_children():
+                    self.remote_fail_tree.delete(row)
+                if err:
+                    self.log_sync_detail_var.set(err)
+                    if "없음" not in err:
+                        messagebox.showerror("조회 실패", err)
+                    return
+                for e in entries:
+                    iid = f"{e.pc_id}::{e.case_id}"
+                    reason = (e.reason or "")[:40]
+                    if e.form_in_dom:
+                        reason = "⚠폼있음·" + reason
+                    self.remote_fail_tree.insert(
+                        "",
+                        "end",
+                        iid=iid,
+                        values=(e.pc_id[:18], reason, (e.url or "")[:60]),
+                    )
+                self.log_sync_detail_var.set(f"원격 실패 {len(entries)}건")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_remote_failure_select(self, _event=None) -> None:
+        sel = self.remote_fail_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if "::" not in iid:
+            return
+        pc_id, case_id = iid.split("::", 1)
+        cfg = self._get_log_sync_config()
+        self.log_sync_detail_var.set(f"{case_id} 불러오는 중…")
+
+        def worker() -> None:
+            data, err = fetch_failure_case(cfg, pc_id, case_id)
+
+            def done() -> None:
+                self.remote_log_box.delete("1.0", "end")
+                if err or not data:
+                    self._remote_log_text = ""
+                    self._remote_failure_detail = None
+                    self.remote_log_box.insert("1.0", err or "없음")
+                    self.log_sync_detail_var.set(err or "없음")
+                    return
+                self._remote_failure_detail = data
+                report = failure_case_to_cursor_report(data)
+                self._remote_log_text = report
+                self.remote_log_box.insert("1.0", report)
+                mark = "폼DOM있음" if data.get("form_in_dom") else "폼DOM불명"
+                self.log_sync_detail_var.set(f"{pc_id} · {case_id} · {mark}")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_remote_failure_cursor_copy(self) -> None:
+        text = ""
+        if self._remote_failure_detail:
+            text = failure_case_to_cursor_report(self._remote_failure_detail)
+        else:
+            text = self._remote_log_text or self.remote_log_box.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo("안내", "먼저 실패 케이스를 선택해 주세요.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update_idletasks()
+        self._show_toast("Cursor 보고서 복사됨 — 채팅에 붙여넣으세요")
+
+    def _on_remote_failure_cursor_save(self) -> None:
+        from tkinter import filedialog
+
+        text = ""
+        if self._remote_failure_detail:
+            text = failure_case_to_cursor_report(self._remote_failure_detail)
+        else:
+            text = self._remote_log_text or self.remote_log_box.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo("안내", "먼저 실패 케이스를 선택해 주세요.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Cursor 실패 보고서 저장",
+            defaultextension=".md",
+            filetypes=[("Markdown", "*.md"), ("Text", "*.txt"), ("All", "*.*")],
+            initialfile="failure_case_cursor.md",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self._show_toast("Cursor 보고서 저장됨")
+        except OSError as exc:
+            messagebox.showerror("저장 실패", str(exc))
+
     def _on_history_select(self, _event=None) -> None:
         pass
 
@@ -2072,21 +2385,7 @@ class BacklinkApp(tk.Tk):
             self.history_detail.config(state="disabled")
 
     def _record_history(self, job: PostJob | TargetJob, status: str, message: str) -> None:
-        w = self.writer
-        if isinstance(job, TargetJob) and job.action == "comment_gnuboard":
-            w = self.comment_writer
-        elif isinstance(job, TargetJob) and job.action == "comment_wordpress":
-            w = self.wp_comment_writer
-        elif isinstance(job, TargetJob) and job.action == "comment_movable_type":
-            w = self.mt_comment_writer
-        elif isinstance(job, TargetJob) and job.action == "comment_custom_bbs":
-            w = self.custom_bbs_writer
-        elif isinstance(job, TargetJob) and job.action == "comment_phpbb":
-            w = self.phpbb_comment_writer
-        elif isinstance(job, TargetJob) and job.action == "comment_generic":
-            w = self.generic_comment_writer
-        elif isinstance(job, TargetJob) and job.kind == "zeroboard_post":
-            w = self.zboard_writer
+        w = self._writer_for_job(job)
         rec = PostRecord.from_job(
             job.board_url,
             job.title,
@@ -2410,9 +2709,16 @@ class BacklinkApp(tk.Tk):
                     self._record_history(job, "success", msg)
                 except Exception as e:
                     fail += 1
-                    err_ko = localize_error_message(str(e))
+                    raw_err = str(e)
+                    err_ko = localize_error_message(raw_err)
                     self.after(0, lambda er=err_ko, j=job: self._log(f"✗ {j.label}: {er}", "err"))
-                    self._record_history(job, "fail", str(e))
+                    # 브라우저 닫기 전에 스냅샷 수집 → 원격 업로드
+                    try:
+                        case = self._capture_failure_case(job, raw_err)
+                        self._queue_failure_case_upload(case)
+                    except Exception:
+                        pass
+                    self._record_history(job, "fail", raw_err)
                 finally:
                     self._close_all_writers()
 

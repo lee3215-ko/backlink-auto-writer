@@ -46,6 +46,7 @@ DEFAULT_STATE: dict = {
         "repo": "backlink-writer-logs",
         "token": "",
         "interval_min": 30,
+        "upload_failures_auto": True,
     },
 }
 
@@ -147,6 +148,8 @@ def collect_from_app(app) -> dict:
                 ls["interval_min"] = float(app.log_sync_interval_var.get())
             except (TypeError, ValueError):
                 ls["interval_min"] = 30
+        if hasattr(app, "log_sync_failures_auto_var"):
+            ls["upload_failures_auto"] = bool(app.log_sync_failures_auto_var.get())
 
     return state
 
@@ -245,6 +248,8 @@ def apply_to_app(app, state: dict | None = None) -> None:
         app.log_sync_token_var.set(ls.get("token", ""))
     if hasattr(app, "log_sync_interval_var"):
         app.log_sync_interval_var.set(ls.get("interval_min", 30))
+    if hasattr(app, "log_sync_failures_auto_var"):
+        app.log_sync_failures_auto_var.set(bool(ls.get("upload_failures_auto", True)))
     if hasattr(app, "_refresh_log_sync_status"):
         try:
             app._refresh_log_sync_status()

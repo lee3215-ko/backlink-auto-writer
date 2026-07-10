@@ -31,6 +31,7 @@ class LogSyncConfig:
     repo: str = DEFAULT_REPO
     token: str = ""
     interval_min: float = 30.0
+    upload_failures_auto: bool = True
 
     @classmethod
     def from_dict(cls, raw: dict | None) -> LogSyncConfig:
@@ -41,6 +42,7 @@ class LogSyncConfig:
             repo=(raw.get("repo") or DEFAULT_REPO).strip() or DEFAULT_REPO,
             token=(raw.get("token") or "").strip(),
             interval_min=float(raw.get("interval_min", 30) or 30),
+            upload_failures_auto=bool(raw.get("upload_failures_auto", True)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,10 +52,15 @@ class LogSyncConfig:
             "repo": self.repo,
             "token": self.token,
             "interval_min": self.interval_min,
+            "upload_failures_auto": self.upload_failures_auto,
         }
 
     def is_ready(self) -> bool:
         return bool(self.enabled and self.owner and self.repo and self.token)
+
+    def can_upload(self) -> bool:
+        """자동 켜짐 여부와 무관 — 토큰·저장소만 있으면 수동 업로드 가능."""
+        return bool(self.owner and self.repo and self.token)
 
 
 @dataclass
@@ -178,11 +185,13 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
     payload: dict[str, Any] = {
         "message": f"log sync {get_pc_id()} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "content": b64,
-        "branch": "main",
     }
+    # 빈 저장소는 branch 지정 시 404 — 기본 브랜치 생성에 맡김
+    # 파일이 이미 있으면 sha 필요
     sha = get_file_sha(cfg, path)
     if sha:
         payload["sha"] = sha
+        payload["branch"] = "main"
 
     code, body = _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload)
     if code in (200, 201):
@@ -191,12 +200,18 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
         _save_last_sync(True, msg)
         return True, msg
 
-    # 재시도 1회 (sha 충돌 등)
-    if code in (409, 422):
+    # 재시도 1회 (sha 충돌·빈 저장소 branch 이슈)
+    if code in (404, 409, 422):
+        payload2 = dict(payload)
+        payload2.pop("branch", None)
         sha2 = get_file_sha(cfg, path)
         if sha2:
-            payload["sha"] = sha2
-        code, body = _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload)
+            payload2["sha"] = sha2
+        elif "sha" in payload2:
+            del payload2["sha"]
+        code, body = _api_request(
+            "PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload2
+        )
         if code in (200, 201):
             msg = f"원격 로그 업로드 완료(재시도) ({path})"
             log.info(msg)
@@ -204,7 +219,14 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
             return True, msg
 
     err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
-    msg = f"원격 로그 업로드 실패 HTTP {code}: {err}"
+    if code == 404:
+        hint = (
+            " — 저장소가 비어 있거나(main 없음)·이름/토큰 권한(contents:write)을 확인하세요. "
+            f"대상: {cfg.owner}/{cfg.repo}"
+        )
+        msg = f"원격 로그 업로드 실패 HTTP {code}: {err}{hint}"
+    else:
+        msg = f"원격 로그 업로드 실패 HTTP {code}: {err}"
     log.info(msg)
     _save_last_sync(False, msg)
     return False, msg
@@ -291,3 +313,305 @@ def load_last_sync() -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+# ── 실패 케이스 (기능 보강용) ──────────────────────────────────────────
+
+MAX_FAILURE_JSON_BYTES = 450 * 1024
+INDEX_MAX_ENTRIES = 80
+
+
+@dataclass
+class FailureCaseEntry:
+    pc_id: str
+    case_id: str
+    path: str
+    url: str = ""
+    reason: str = ""
+    action: str = ""
+    uploaded_at: str = ""
+    form_in_dom: bool = False
+    size: int = 0
+
+
+def make_case_id(url: str = "") -> str:
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    digest = hashlib.sha1(f"{url}|{ts}|{get_pc_id()}".encode()).hexdigest()[:8]
+    return f"{ts}-{digest}"
+
+
+def _failure_case_path(pc_id: str, case_id: str) -> str:
+    return f"failures/{pc_id}/{case_id}.json"
+
+
+def _failure_index_path(pc_id: str) -> str:
+    return f"failures/{pc_id}/index.json"
+
+
+def _put_text_file(cfg: LogSyncConfig, path: str, text: str, message: str) -> tuple[int, Any]:
+    """Contents API PUT — 빈 저장소·sha 충돌 재시도 포함."""
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    payload: dict[str, Any] = {"message": message, "content": b64}
+    sha = get_file_sha(cfg, path)
+    if sha:
+        payload["sha"] = sha
+        payload["branch"] = "main"
+    code, body = _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload)
+    if code in (200, 201):
+        return code, body
+    if code in (404, 409, 422):
+        payload2 = dict(payload)
+        payload2.pop("branch", None)
+        sha2 = get_file_sha(cfg, path)
+        if sha2:
+            payload2["sha"] = sha2
+        elif "sha" in payload2:
+            del payload2["sha"]
+        return _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload2)
+    return code, body
+
+
+def _get_json_file(cfg: LogSyncConfig, path: str) -> tuple[Any | None, str]:
+    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token)
+    if code == 404:
+        return None, ""
+    if code != 200 or not isinstance(body, dict):
+        err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
+        return None, f"HTTP {code}: {err}"
+    try:
+        raw = base64.b64decode((body.get("content") or "").replace("\n", ""))
+        return json.loads(raw.decode("utf-8", errors="replace")), ""
+    except Exception as exc:
+        return None, f"디코드 실패: {exc}"
+
+
+def build_failure_case(
+    *,
+    url: str,
+    raw_error: str,
+    localized_reason: str,
+    action: str = "",
+    kind: str = "",
+    app_version: str = "",
+    writer_urls: dict | None = None,
+    snapshot: dict | None = None,
+    dom_markers: dict | None = None,
+    html_excerpt: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    case_id = make_case_id(url)
+    markers = dom_markers or {}
+    form_in_dom = bool(
+        markers.get("#commentform")
+        or markers.get("#comment-form")
+        or markers.get("textarea[name=comment]")
+        or markers.get("#comment")
+        or (snapshot or {}).get("comment_form_found")
+    )
+    case: dict[str, Any] = {
+        "case_id": case_id,
+        "pc_id": get_pc_id(),
+        "host": platform.node(),
+        "app_version": app_version,
+        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "url": url,
+        "action": action,
+        "kind": kind,
+        "raw_error": (raw_error or "")[:2000],
+        "localized_reason": localized_reason,
+        "form_in_dom": form_in_dom,
+        "writer_urls": writer_urls or {},
+        "dom_markers": markers,
+        "snapshot": snapshot or {},
+        "note": note,
+    }
+    if html_excerpt:
+        # 용량 제한
+        max_html = 35000
+        case["html_excerpt"] = html_excerpt[:max_html]
+    encoded = json.dumps(case, ensure_ascii=False).encode("utf-8")
+    if len(encoded) > MAX_FAILURE_JSON_BYTES:
+        case.pop("html_excerpt", None)
+        snap = case.get("snapshot") or {}
+        if isinstance(snap, dict) and "body_excerpt" in snap:
+            snap["body_excerpt"] = str(snap.get("body_excerpt", ""))[:200]
+    return case
+
+
+def _case_summary(case: dict) -> dict[str, Any]:
+    return {
+        "case_id": case.get("case_id", ""),
+        "url": case.get("url", ""),
+        "reason": case.get("localized_reason", ""),
+        "action": case.get("action", ""),
+        "uploaded_at": case.get("uploaded_at", ""),
+        "form_in_dom": bool(case.get("form_in_dom")),
+        "app_version": case.get("app_version", ""),
+    }
+
+
+def upload_failure_case(cfg: LogSyncConfig, case: dict) -> tuple[bool, str]:
+    if not cfg.can_upload():
+        return False, "토큰·저장소 설정 필요"
+    pc_id = case.get("pc_id") or get_pc_id()
+    case_id = case.get("case_id") or make_case_id(case.get("url", ""))
+    case["case_id"] = case_id
+    case["pc_id"] = pc_id
+    path = _failure_case_path(pc_id, case_id)
+    text = json.dumps(case, ensure_ascii=False, indent=2)
+    code, body = _put_text_file(
+        cfg,
+        path,
+        text,
+        f"failure {pc_id} {case_id}",
+    )
+    if code not in (200, 201):
+        err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
+        msg = f"실패 케이스 업로드 실패 HTTP {code}: {err}"
+        log.info(msg)
+        return False, msg
+
+    # index.json 갱신
+    idx_path = _failure_index_path(pc_id)
+    index, _ = _get_json_file(cfg, idx_path)
+    if not isinstance(index, list):
+        index = []
+    summary = _case_summary(case)
+    index = [x for x in index if isinstance(x, dict) and x.get("case_id") != case_id]
+    index.insert(0, summary)
+    index = index[:INDEX_MAX_ENTRIES]
+    _put_text_file(
+        cfg,
+        idx_path,
+        json.dumps(index, ensure_ascii=False, indent=2),
+        f"failure index {pc_id}",
+    )
+    msg = f"실패 케이스 업로드 완료 ({path})"
+    log.info(msg)
+    return True, msg
+
+
+def upload_failure_cases(cfg: LogSyncConfig, cases: list[dict]) -> tuple[int, int, str]:
+    ok_n = 0
+    fail_n = 0
+    last = ""
+    for case in cases:
+        ok, msg = upload_failure_case(cfg, case)
+        last = msg
+        if ok:
+            ok_n += 1
+        else:
+            fail_n += 1
+    return ok_n, fail_n, last
+
+
+def list_failure_cases(cfg: LogSyncConfig, *, limit: int = 120) -> tuple[list[FailureCaseEntry], str]:
+    if not cfg.can_upload():
+        return [], "토큰·저장소 설정 필요"
+    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, "failures"), token=cfg.token)
+    if code == 404:
+        return [], "failures/ 없음 — 아직 업로드된 실패 케이스가 없습니다"
+    if code != 200:
+        err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
+        return [], f"목록 조회 실패 HTTP {code}: {err}"
+    if not isinstance(body, list):
+        return [], "목록 형식 오류"
+
+    entries: list[FailureCaseEntry] = []
+    for item in body:
+        if not isinstance(item, dict) or item.get("type") != "dir":
+            continue
+        pc_id = item.get("name") or ""
+        if not pc_id:
+            continue
+        index, err = _get_json_file(cfg, _failure_index_path(pc_id))
+        if isinstance(index, list):
+            for row in index:
+                if not isinstance(row, dict):
+                    continue
+                case_id = row.get("case_id") or ""
+                if not case_id:
+                    continue
+                entries.append(
+                    FailureCaseEntry(
+                        pc_id=pc_id,
+                        case_id=case_id,
+                        path=_failure_case_path(pc_id, case_id),
+                        url=row.get("url") or "",
+                        reason=row.get("reason") or "",
+                        action=row.get("action") or "",
+                        uploaded_at=row.get("uploaded_at") or "",
+                        form_in_dom=bool(row.get("form_in_dom")),
+                    )
+                )
+            continue
+        # index 없으면 디렉터리 나열
+        dcode, dbody = _api_request(
+            "GET", _contents_url(cfg.owner, cfg.repo, f"failures/{pc_id}"), token=cfg.token
+        )
+        if dcode != 200 or not isinstance(dbody, list):
+            continue
+        for f in dbody:
+            if not isinstance(f, dict) or f.get("type") != "file":
+                continue
+            name = f.get("name") or ""
+            if not name.endswith(".json") or name == "index.json":
+                continue
+            case_id = name[:-5]
+            entries.append(
+                FailureCaseEntry(
+                    pc_id=pc_id,
+                    case_id=case_id,
+                    path=_failure_case_path(pc_id, case_id),
+                    size=int(f.get("size") or 0),
+                )
+            )
+
+    entries.sort(key=lambda e: e.uploaded_at or e.case_id, reverse=True)
+    return entries[:limit], ""
+
+
+def fetch_failure_case(cfg: LogSyncConfig, pc_id: str, case_id: str) -> tuple[dict | None, str]:
+    data, err = _get_json_file(cfg, _failure_case_path(pc_id, case_id))
+    if err:
+        return None, err
+    if data is None:
+        return None, "파일을 찾을 수 없습니다"
+    if not isinstance(data, dict):
+        return None, "JSON 형식 오류"
+    return data, ""
+
+
+def failure_case_to_cursor_report(case: dict) -> str:
+    """Cursor에 붙여넣어 기능 보강 요청용 마크다운."""
+    lines = [
+        "# 백링크 자동화 — 원격 실패 케이스 (기능 보강 요청)",
+        "",
+        f"- case_id: `{case.get('case_id', '')}`",
+        f"- pc_id: `{case.get('pc_id', '')}`",
+        f"- app: `{case.get('app_version', '')}`",
+        f"- uploaded_at: {case.get('uploaded_at', '')}",
+        f"- action/kind: `{case.get('action', '')}` / `{case.get('kind', '')}`",
+        f"- URL: {case.get('url', '')}",
+        f"- 한글 사유: {case.get('localized_reason', '')}",
+        f"- raw_error: {case.get('raw_error', '')}",
+        f"- form_in_dom(추정): {'예' if case.get('form_in_dom') else '아니오'}",
+        "",
+        "## DOM 마커",
+        "```json",
+        json.dumps(case.get("dom_markers") or {}, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## 스냅샷",
+        "```json",
+        json.dumps(case.get("snapshot") or {}, ensure_ascii=False, indent=2)[:8000],
+        "```",
+        "",
+        "## 요청",
+        "위 URL은 화면에 댓글/입력 폼이 있는데 프로그램이 못 찾은 경우가 많습니다.",
+        "셀렉터·대기·스크롤·visibility 로직을 보강해 자동 등록되게 수정해 주세요.",
+    ]
+    html = case.get("html_excerpt") or ""
+    if html:
+        lines.extend(["", "## HTML 발췌", "```html", html[:12000], "```"])
+    return "\n".join(lines)

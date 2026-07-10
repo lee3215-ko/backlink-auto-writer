@@ -1,13 +1,10 @@
 {
-    "version":  "1.0.9",
-    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472144442",
-    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.9/BacklinkWriter.zip",
-    "notes":  "WP 댓글 폼 인식 보강 (Avada/Neve, DOM 기준·한글 라벨·force 입력) — ypvalley 등 다른 PC 실패 수정",
-    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472144442",
-    "asset_id":  472144442,
+    "version":  "1.0.10",
+    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.10/BacklinkWriter.zip",
+    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.10/BacklinkWriter.zip",
+    "notes":  "원격 실패 케이스 업로드 — 폼 미인식 등 스냅샷·DOM·HTML을 GitHub에 올려 관리자 PC에서 Cursor 보강 가능",
     "download_urls":  [
-                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472144442",
-                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.9/BacklinkWriter.zip",
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.10/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ]
 }
