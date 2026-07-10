@@ -1,9 +1,12 @@
 {
     "version":  "1.0.8",
-    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.8/BacklinkWriter.zip",
+    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472085966",
     "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.8/BacklinkWriter.zip",
     "notes":  "GitHub 원격 로그 업로드·관리자 조회 탭",
+    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472085966",
+    "asset_id":  472085966,
     "download_urls":  [
+                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472085966",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.8/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ]
