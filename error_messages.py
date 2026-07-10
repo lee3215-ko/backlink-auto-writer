@@ -7,13 +7,15 @@ import re
 # (영문/기술 패턴, 한글 설명) — 순서 중요 (긴 패턴 우선)
 _RULES: list[tuple[str, str]] = [
     (
+        r"BrowserType\.launch: Executable doesn't exist",
+        "내장 Chrome 없음 — exe 옆 ms-playwright\\chromium-*\\chrome.exe 확인",
+    ),
+    (
         r"Executable doesn't exist",
         "내장 Chrome 없음 — ms-playwright 폴더 누락·백신 차단. zip 전체 재설치 또는 최신 버전 업데이트",
     ),
     (
-        r"BrowserType\.launch: Executable doesn't exist",
-        "내장 Chrome 없음 — exe 옆 ms-playwright\\chromium-*\\chrome.exe 확인",
-    ),
+        r"It looks like you are using Playwright Sync API inside the asyncio loop",
         "브라우저 엔진 충돌 (수집·배포 동시 실행 또는 환경 오류) — 수집 중지 후 재시도",
     ),
     (
@@ -51,19 +53,15 @@ def localize_error_message(message: str) -> str:
     if not message:
         return "알 수 없는 오류"
     text = message.strip()
-    # 이미 한글이 많으면 그대로 (짧은 영문 조각만 치환)
     for pattern, korean in _RULES:
         if re.search(pattern, text, re.I | re.DOTALL):
-            # Call log 등 긴 영문은 첫 줄만 한글 + 원문 일부
             if len(text) > 200 and "Call log" in text:
                 first = text.split("\n")[0]
                 if re.search(pattern, first, re.I):
                     return korean
             return korean
-    # 한글 포함 시 원문 반환 (너무 길면 자름)
     if re.search(r"[\uac00-\ud7a3]", text):
         return text if len(text) <= 200 else text[:197] + "..."
-    # 영문만 — 첫 줄 요약
     first_line = text.split("\n")[0].strip()
     if len(first_line) > 120:
         first_line = first_line[:117] + "..."

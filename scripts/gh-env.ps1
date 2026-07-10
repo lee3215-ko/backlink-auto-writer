@@ -23,6 +23,10 @@ function Invoke-Gh {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GhArgs)
     $gh = Get-GhExe
     if (-not $gh) { throw "GitHub CLI(gh) 없음. winget install GitHub.cli" }
+    $gitSafe = (Resolve-Path (Split-Path $PSScriptRoot -Parent)).Path
+    $env:GIT_CONFIG_COUNT = "1"
+    $env:GIT_CONFIG_KEY_0 = "safe.directory"
+    $env:GIT_CONFIG_VALUE_0 = $gitSafe
     & $gh @GhArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
