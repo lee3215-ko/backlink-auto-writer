@@ -115,6 +115,9 @@ def _is_wordpress_url(url: str, path: str, low: str, host: str = "") -> bool:
         return True
     if _is_wordpress_host(host or urlparse(url).netloc):
         return True
+    segs = [s for s in unquote((path or "").strip("/")).split("/") if s]
+    if segs and segs[0].lower() in _WP_CPT_PREFIXES and len(segs) >= 2:
+        return True
     if re.search(r"/\d{4}/\d{2}/", path) and not re.search(r"\.html?$", path, re.I):
         return True
     if "?p=" in low or "&p=" in low:
@@ -136,6 +139,12 @@ _WP_STATIC_SLUGS = frozenset({
     "about", "contact", "privacy", "terms", "login", "cart", "shop", "author",
     "category", "tag", "page", "feed", "wp-admin", "wp-login.php",
     "home", "index", "news", "faq", "search", "sitemap",
+})
+
+# Avada / 포트폴리오 CPT 등 — 슬러그만으로 WP 글로 인식
+_WP_CPT_PREFIXES = frozenset({
+    "avada_portfolio", "portfolio", "project", "projects",
+    "works", "work", "gallery", "product", "products",
 })
 
 

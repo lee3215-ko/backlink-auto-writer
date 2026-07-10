@@ -22,9 +22,10 @@ WP_COMMENT_SELECTORS = [
     '#comment-form textarea[name="comment"]',
     'textarea[placeholder*="Message" i]',
     'textarea[placeholder*="Kommentar" i]',
+    'textarea[placeholder*="댓글" i]',
 ]
 
-WP_COMMENT_ROLE_NAMES = ("Comment", "Message", "Kommentar")
+WP_COMMENT_ROLE_NAMES = ("Comment", "Message", "Kommentar", "댓글")
 
 WP_AUTHOR_SELECTORS = [
     "#author",
@@ -32,6 +33,7 @@ WP_AUTHOR_SELECTORS = [
     "#commentform input[name='author']",
     'input[placeholder*="Name" i]',
     'input[aria-label*="Name" i]',
+    'input[placeholder*="이름" i]',
 ]
 
 WP_EMAIL_SELECTORS = [
@@ -39,6 +41,7 @@ WP_EMAIL_SELECTORS = [
     'input[name="email"]',
     'input[type="email"]',
     'input[placeholder*="Email" i]',
+    'input[placeholder*="이메일" i]',
 ]
 
 WP_URL_SELECTORS = [
@@ -46,7 +49,16 @@ WP_URL_SELECTORS = [
     'input[name="url"]',
     'input[placeholder*="Website" i]',
     'input[placeholder*="URL" i]',
+    'input[placeholder*="웹사이트" i]',
 ]
+
+WP_FORM_ROOT_SELECTORS = (
+    "#commentform",
+    "#comment-form",
+    "form.comment-form",
+    "#respond form",
+    ".comment-respond form",
+)
 
 WP_SUBMIT_SELECTORS = [
     "#submit",
@@ -99,11 +111,16 @@ class WordPressCommentWriter(BoardWriter):
 
         assert_page_accessible(self.page)
         self._dismiss_cookie_banners()
-        self._wait_for_comment_form(max_sec=40)
+        self._wait_for_comment_form(max_sec=45)
         self._open_wp_comment_form()
+        self._ensure_comment_fields_ready()
 
         if not self._has_wp_comment_form():
-            raise RuntimeError("워드프레스 댓글 폼을 찾을 수 없습니다. (로딩 지연·댓글 차단·회원 전용)")
+            detail = self._comment_form_miss_detail()
+            raise RuntimeError(
+                "워드프레스 댓글 폼을 찾을 수 없습니다. (로딩 지연·댓글 차단·회원 전용)"
+                + (f" [{detail}]" if detail else "")
+            )
 
         return "워드프레스 글 열림"
 
@@ -126,6 +143,21 @@ class WordPressCommentWriter(BoardWriter):
         if last_err:
             raise RuntimeError(f"페이지 로딩 실패 (SSL·리다이렉트·차단): {last_err}") from last_err
         raise RuntimeError("페이지 로딩 실패 — URL을 확인해 주세요.")
+
+    def _comment_form_in_dom(self) -> bool:
+        """표시 여부와 무관 — DOM에 표준 WP 댓글 폼이 있는지."""
+        page = self.page
+        assert page is not None
+        try:
+            for sel in WP_FORM_ROOT_SELECTORS:
+                if page.locator(sel).count() > 0:
+                    if page.locator("#comment, textarea[name='comment']").count() > 0:
+                        return True
+            if page.locator("#comment, textarea[name='comment']").count() > 0:
+                return True
+        except Exception:
+            pass
+        return False
 
     def _comment_textarea_visible(self) -> bool:
         page = self.page
@@ -150,6 +182,15 @@ class WordPressCommentWriter(BoardWriter):
         """느린 페이지 — 댓글 영역이 나타날 때까지 스크롤·대기."""
         page = self.page
         assert page is not None
+        # 서버 렌더 폼(Neve/Avada 등) — attached 만으로도 충분
+        try:
+            page.wait_for_selector(
+                "#commentform, #comment-form, form.comment-form, #comment, textarea[name='comment']",
+                state="attached",
+                timeout=8000,
+            )
+        except Exception:
+            pass
         for step in range(max_sec):
             if self._cancelled:
                 raise RuntimeError(
@@ -160,7 +201,7 @@ class WordPressCommentWriter(BoardWriter):
                     assert_page_accessible(page)
                 except RuntimeError:
                     raise
-            if self._comment_textarea_visible():
+            if self._comment_textarea_visible() or self._comment_form_in_dom():
                 self._scroll_to_comment_area()
                 return
             if step >= 4 and self._has_comment_reply_links():
@@ -176,8 +217,34 @@ class WordPressCommentWriter(BoardWriter):
             )
             if step % 4 == 3:
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            if step == 10:
+                self._dismiss_cookie_banners()
             page.wait_for_timeout(1000)
         self._scroll_to_comment_area()
+
+    def _ensure_comment_fields_ready(self) -> None:
+        """뷰포트 밖·오버레이에 가려진 폼도 스크롤 후 입력 가능하게."""
+        page = self.page
+        assert page is not None
+        self._scroll_to_comment_area()
+        try:
+            loc = page.locator("#comment, textarea[name='comment']")
+            if loc.count() > 0:
+                loc.first.scroll_into_view_if_needed(timeout=4000)
+                page.wait_for_timeout(300)
+        except Exception:
+            pass
+
+    def _comment_form_miss_detail(self) -> str:
+        page = self.page
+        assert page is not None
+        try:
+            title = (page.title() or "")[:60]
+            cur = (page.url or "")[:80]
+            has_wp = "wp-comments-post" in (page.content() or "")[:200000]
+            return f"url={cur} title={title!r} wp-post={'Y' if has_wp else 'N'}"
+        except Exception:
+            return ""
 
     def _dismiss_cookie_banners(self) -> None:
         page = self.page
@@ -186,7 +253,12 @@ class WordPressCommentWriter(BoardWriter):
             'button:has-text("Accept")',
             'button:has-text("Got it")',
             'button:has-text("동의")',
+            'button:has-text("확인")',
+            'button:has-text("닫기")',
+            'a:has-text("동의")',
             ".cc-dismiss",
+            "#cookie-notice .cn-set-cookie",
+            ".cookie-accept",
         ):
             try:
                 loc = page.locator(sel)
@@ -277,6 +349,9 @@ class WordPressCommentWriter(BoardWriter):
             'a:has-text("Leave Your Reply")',
             'a:has-text("Leave a comment")',
             'a:has-text("leave a reply")',
+            'a:has-text("댓글 남기기")',
+            'a:has-text("댓글 달기")',
+            'a:has-text("댓글쓰기")',
             'a:has-text("Kommentar hinterlassen")',
             'a:has-text("Schreibe einen Kommentar")',
             "#respond a.comment-reply-login",
@@ -305,13 +380,10 @@ class WordPressCommentWriter(BoardWriter):
         self._open_wp_comment_form()
 
     def _has_wp_comment_form(self) -> bool:
-        if self._comment_textarea_visible():
+        if self._comment_textarea_visible() or self._comment_form_in_dom():
             return True
         page = self.page
         assert page is not None
-        if page.locator("#comment-form, #commentform, form.comment-form").count() > 0:
-            if page.locator("#comment, textarea[name='comment']").count() > 0:
-                return True
         for name in WP_COMMENT_ROLE_NAMES:
             try:
                 if page.get_by_role("textbox", name=name).count() > 0:
@@ -320,19 +392,57 @@ class WordPressCommentWriter(BoardWriter):
                 pass
         return False
 
-    def _fill_wp_field(self, selectors: list[str], value: str, *, role_name: str = "") -> bool:
-        if selectors and self._fill_first(selectors, value):
-            return True
+    def _fill_wp_locator(self, loc, value: str) -> bool:
+        """visible 여부와 무관하게 스크롤 후 fill (force)."""
         page = self.page
         assert page is not None
-        if role_name:
+        try:
+            if loc.count() == 0:
+                return False
+            el = loc.first
             try:
-                loc = page.get_by_role("textbox", name=role_name)
-                if loc.count() > 0 and loc.first.is_visible():
-                    loc.first.fill(value)
+                el.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            try:
+                el.fill(value, timeout=5000)
+                return True
+            except Exception:
+                el.fill(value, force=True, timeout=5000)
+                return True
+        except Exception:
+            return False
+
+    def _fill_wp_field(self, selectors: list[str], value: str, *, role_name: str = "") -> bool:
+        page = self.page
+        assert page is not None
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0 and self._fill_wp_locator(loc, value):
                     return True
             except Exception:
                 pass
+        if role_name:
+            try:
+                loc = page.get_by_role("textbox", name=role_name)
+                if loc.count() > 0 and self._fill_wp_locator(loc, value):
+                    return True
+            except Exception:
+                pass
+            # 한글 라벨 (이름 / 이메일 / 웹사이트)
+            ko_map = {
+                "Name": ("이름", "성명"),
+                "Email": ("이메일", "메일"),
+                "Website": ("웹사이트", "사이트"),
+            }
+            for alt in ko_map.get(role_name, ()):
+                try:
+                    loc = page.get_by_role("textbox", name=alt)
+                    if loc.count() > 0 and self._fill_wp_locator(loc, value):
+                        return True
+                except Exception:
+                    pass
         return False
 
     def _fill_wp_comment(self, body: str) -> bool:
@@ -343,14 +453,31 @@ class WordPressCommentWriter(BoardWriter):
         for name in WP_COMMENT_ROLE_NAMES:
             if self._fill_wp_field([], body, role_name=name):
                 return True
-        for ph in ("Message", "Kommentar", "Comment"):
+        for ph in ("Message", "Kommentar", "Comment", "댓글"):
             try:
                 loc = page.get_by_placeholder(ph)
-                if loc.count() > 0 and loc.first.is_visible():
-                    loc.first.fill(body)
+                if loc.count() > 0 and self._fill_wp_locator(loc, body):
                     return True
             except Exception:
                 pass
+        # 최후: JS로 직접 값 설정 (일부 테마에서 Playwright fill 실패)
+        try:
+            ok = page.evaluate(
+                """(text) => {
+                    const el = document.querySelector('#comment, textarea[name="comment"]');
+                    if (!el) return false;
+                    el.focus();
+                    el.value = text;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                }""",
+                body,
+            )
+            if ok:
+                return True
+        except Exception:
+            pass
         return False
 
     def _accept_wp_comment_extras(self) -> None:
@@ -386,24 +513,53 @@ class WordPressCommentWriter(BoardWriter):
         assert page is not None
         for sel in WP_SUBMIT_SELECTORS:
             loc = page.locator(sel)
-            if loc.count() > 0 and loc.first.is_visible():
-                loc.first.click(no_wait_after=True)
+            if loc.count() == 0:
+                continue
+            el = loc.first
+            try:
+                el.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            try:
+                if el.is_visible():
+                    el.click(no_wait_after=True)
+                    return
+            except Exception:
+                pass
+            try:
+                el.click(force=True, no_wait_after=True)
                 return
+            except Exception:
+                continue
         for label in WP_SUBMIT_LABELS:
             try:
                 btn = page.get_by_role("button", name=label)
-                if btn.count() > 0 and btn.first.is_visible():
-                    btn.first.click(no_wait_after=True)
+                if btn.count() > 0:
+                    btn.first.click(force=True, no_wait_after=True)
                     return
             except Exception:
                 pass
             try:
                 inp = page.locator(f'input[type="submit"][value="{label}"]')
-                if inp.count() > 0 and inp.first.is_visible():
-                    inp.first.click(no_wait_after=True)
+                if inp.count() > 0:
+                    inp.first.click(force=True, no_wait_after=True)
                     return
             except Exception:
                 pass
+        # 최후: #submit / form submit
+        try:
+            clicked = page.evaluate(
+                """() => {
+                    const btn = document.querySelector('#submit, #commentform input[type="submit"], form.comment-form input[type="submit"]');
+                    if (!btn) return false;
+                    btn.click();
+                    return true;
+                }"""
+            )
+            if clicked:
+                return
+        except Exception:
+            pass
         raise RuntimeError("댓글 등록 버튼을 찾을 수 없습니다.")
 
     def _wp_submit_succeeded(self, *, keyword: str, target_url: str = "") -> str:
