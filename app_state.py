@@ -40,6 +40,13 @@ DEFAULT_STATE: dict = {
         "openai_api_base": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
     },
+    "log_sync": {
+        "enabled": False,
+        "owner": "lee3215-ko",
+        "repo": "backlink-writer-logs",
+        "token": "",
+        "interval_min": 30,
+    },
 }
 
 
@@ -61,6 +68,8 @@ def load_state() -> dict:
             state.setdefault("browser", {}).update(raw["browser"])
         if isinstance(raw.get("ai"), dict):
             state.setdefault("ai", {}).update(raw["ai"])
+        if isinstance(raw.get("log_sync"), dict):
+            state.setdefault("log_sync", {}).update(raw["log_sync"])
         return state
     except Exception:
         return json.loads(json.dumps(DEFAULT_STATE))
@@ -123,6 +132,21 @@ def collect_from_app(app) -> dict:
 
     if hasattr(app, "ai_api_key_var"):
         state.setdefault("ai", {})["openai_api_key"] = app.ai_api_key_var.get().strip()
+
+    if hasattr(app, "log_sync_enabled_var"):
+        ls = state.setdefault("log_sync", {})
+        ls["enabled"] = bool(app.log_sync_enabled_var.get())
+        if hasattr(app, "log_sync_owner_var"):
+            ls["owner"] = app.log_sync_owner_var.get().strip()
+        if hasattr(app, "log_sync_repo_var"):
+            ls["repo"] = app.log_sync_repo_var.get().strip()
+        if hasattr(app, "log_sync_token_var"):
+            ls["token"] = app.log_sync_token_var.get().strip()
+        if hasattr(app, "log_sync_interval_var"):
+            try:
+                ls["interval_min"] = float(app.log_sync_interval_var.get())
+            except (TypeError, ValueError):
+                ls["interval_min"] = 30
 
     return state
 
@@ -209,3 +233,25 @@ def apply_to_app(app, state: dict | None = None) -> None:
     ai = state.get("ai") or {}
     if hasattr(app, "ai_api_key_var"):
         app.ai_api_key_var.set(ai.get("openai_api_key", ""))
+
+    ls = state.get("log_sync") or {}
+    if hasattr(app, "log_sync_enabled_var"):
+        app.log_sync_enabled_var.set(bool(ls.get("enabled", False)))
+    if hasattr(app, "log_sync_owner_var"):
+        app.log_sync_owner_var.set(ls.get("owner", "lee3215-ko"))
+    if hasattr(app, "log_sync_repo_var"):
+        app.log_sync_repo_var.set(ls.get("repo", "backlink-writer-logs"))
+    if hasattr(app, "log_sync_token_var"):
+        app.log_sync_token_var.set(ls.get("token", ""))
+    if hasattr(app, "log_sync_interval_var"):
+        app.log_sync_interval_var.set(ls.get("interval_min", 30))
+    if hasattr(app, "_refresh_log_sync_status"):
+        try:
+            app._refresh_log_sync_status()
+        except Exception:
+            pass
+    if hasattr(app, "_schedule_log_sync_timer"):
+        try:
+            app._schedule_log_sync_timer()
+        except Exception:
+            pass

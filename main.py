@@ -41,6 +41,14 @@ from startup_update import try_startup_update
 from update_splash import UpdateSplash
 from update_ui import schedule_update_check
 from app_paths import is_frozen, playwright_browsers_error_message, playwright_browsers_ready
+from log_sync import (
+    LogSyncConfig,
+    fetch_client_log,
+    get_pc_id,
+    list_client_logs,
+    load_last_sync,
+    upload_latest_log,
+)
 
 COLORS = {
     "bg": "#f0f4f8",
@@ -114,6 +122,8 @@ class BacklinkApp(tk.Tk):
         self._window_moving = False
         self._log_pending: list[tuple[str, str]] = []
         self._discover_log_pending: list[str] = []
+        self._log_sync_after_id: str | None = None
+        self._log_sync_uploading = False
 
         self._setup_styles()
         self._build_ui()
@@ -132,6 +142,8 @@ class BacklinkApp(tk.Tk):
         self._sync_urls_pick_list(preserve_selection=False)
         self._refresh_counts()
         self._refresh_history_tree()
+        self._refresh_log_sync_status()
+        self._schedule_log_sync_timer()
         if is_frozen():
             schedule_update_check(
                 self,
@@ -247,6 +259,14 @@ class BacklinkApp(tk.Tk):
             self.header_frame, text=f"v{APP_VERSION}",
             bg=COLORS["header"], fg="#64748b", font=(FONT, 9),
         ).pack(side="right", padx=(0, 12))
+        self.log_sync_status_var = tk.StringVar(value="")
+        tk.Label(
+            self.header_frame,
+            textvariable=self.log_sync_status_var,
+            bg=COLORS["header"],
+            fg="#94a3b8",
+            font=(FONT, 8),
+        ).pack(side="right", padx=(0, 8))
         self.headless_var = tk.BooleanVar(value=False)
         self.headless_btn = tk.Checkbutton(
             self.header_frame,
@@ -279,6 +299,7 @@ class BacklinkApp(tk.Tk):
         self._build_check_tab()
         self._build_write_tab()
         self._build_history_tab()
+        self._build_remote_logs_tab()
 
     def _build_sets_tab(self) -> None:
         tab = ttk.Frame(self.notebook)
@@ -1746,6 +1767,299 @@ class BacklinkApp(tk.Tk):
         if remaining:
             self.urls_box.insert("1.0", "\n".join(remaining) + "\n")
 
+    def _build_remote_logs_tab(self) -> None:
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="  원격 로그  ")
+
+        hint = ttk.Label(
+            tab,
+            text=(
+                "이용자 PC 로그를 GitHub private 저장소에 올리고, 관리자 PC에서 조회합니다. "
+                f"이 PC ID: {get_pc_id()}"
+            ),
+            style="Hint.TLabel",
+            wraplength=980,
+        )
+        hint.pack(anchor="w", padx=8, pady=(8, 4))
+
+        cfg_f = ttk.LabelFrame(tab, text="동기화 설정", style="Card.TLabelframe", padding=8)
+        cfg_f.pack(fill="x", padx=8, pady=4)
+
+        self.log_sync_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            cfg_f,
+            text="로그 자동 업로드 켜기",
+            variable=self.log_sync_enabled_var,
+            command=self._on_log_sync_settings_changed,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=2)
+
+        ttk.Label(cfg_f, text="Owner").grid(row=1, column=0, sticky="w", pady=2)
+        self.log_sync_owner_var = tk.StringVar(value="lee3215-ko")
+        ttk.Entry(cfg_f, textvariable=self.log_sync_owner_var, width=24).grid(
+            row=1, column=1, sticky="w", padx=6, pady=2
+        )
+
+        ttk.Label(cfg_f, text="Repo").grid(row=1, column=2, sticky="w", padx=(12, 0), pady=2)
+        self.log_sync_repo_var = tk.StringVar(value="backlink-writer-logs")
+        ttk.Entry(cfg_f, textvariable=self.log_sync_repo_var, width=28).grid(
+            row=1, column=3, sticky="w", padx=6, pady=2
+        )
+
+        ttk.Label(cfg_f, text="GitHub Token").grid(row=2, column=0, sticky="w", pady=2)
+        self.log_sync_token_var = tk.StringVar()
+        ttk.Entry(cfg_f, textvariable=self.log_sync_token_var, width=48, show="*").grid(
+            row=2, column=1, columnspan=2, sticky="we", padx=6, pady=2
+        )
+
+        ttk.Label(cfg_f, text="주기(분)").grid(row=2, column=3, sticky="w", padx=(12, 0), pady=2)
+        self.log_sync_interval_var = tk.DoubleVar(value=30)
+        ttk.Entry(cfg_f, textvariable=self.log_sync_interval_var, width=8).grid(
+            row=2, column=4, sticky="w", padx=6, pady=2
+        )
+
+        btn_row = ttk.Frame(cfg_f)
+        btn_row.grid(row=3, column=0, columnspan=5, sticky="w", pady=(8, 0))
+        ttk.Button(btn_row, text="설정 저장", command=self._on_log_sync_settings_changed).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(btn_row, text="지금 이 PC 로그 업로드", command=self._on_log_sync_upload_now).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(btn_row, text="원격 PC 목록 새로고침", command=self._on_remote_logs_refresh).pack(
+            side="left", padx=(0, 6)
+        )
+        self.log_sync_detail_var = tk.StringVar(value="동기화 대기")
+        ttk.Label(btn_row, textvariable=self.log_sync_detail_var, style="Hint.TLabel").pack(
+            side="left", padx=8
+        )
+
+        help_txt = (
+            "1) GitHub에 private 저장소 backlink-writer-logs 생성  "
+            "2) Fine-grained PAT (Contents Read/Write) 발급  "
+            "3) 토큰을 관리자·이용자 PC에 동일 입력"
+        )
+        ttk.Label(cfg_f, text=help_txt, style="Hint.TLabel", wraplength=980).grid(
+            row=4, column=0, columnspan=5, sticky="w", pady=(8, 0)
+        )
+
+        body = ttk.PanedWindow(tab, orient="horizontal")
+        body.pack(fill="both", expand=True, padx=8, pady=8)
+
+        left = ttk.LabelFrame(body, text="원격 PC 목록", style="Card.TLabelframe", padding=4)
+        body.add(left, weight=1)
+        cols = ("pc", "size")
+        self.remote_log_tree = ttk.Treeview(left, columns=cols, show="headings", height=14)
+        self.remote_log_tree.heading("pc", text="PC ID")
+        self.remote_log_tree.heading("size", text="크기")
+        self.remote_log_tree.column("pc", width=220)
+        self.remote_log_tree.column("size", width=90, anchor="e")
+        self.remote_log_tree.pack(fill="both", expand=True, side="left")
+        sb = ttk.Scrollbar(left, orient="vertical", command=self.remote_log_tree.yview)
+        sb.pack(side="right", fill="y")
+        self.remote_log_tree.configure(yscrollcommand=sb.set)
+        self.remote_log_tree.bind("<<TreeviewSelect>>", self._on_remote_log_select)
+
+        right = ttk.LabelFrame(body, text="로그 내용", style="Card.TLabelframe", padding=4)
+        body.add(right, weight=3)
+        rbtn = ttk.Frame(right)
+        rbtn.pack(fill="x", pady=(0, 4))
+        ttk.Button(rbtn, text="클립보드 복사", command=self._on_remote_log_copy).pack(side="left", padx=(0, 6))
+        ttk.Button(rbtn, text="파일로 저장", command=self._on_remote_log_save).pack(side="left")
+        self.remote_log_box = scrolledtext.ScrolledText(
+            right, height=18, font=(FONT_MONO, 9),
+            bg=COLORS["log_bg"], fg=COLORS["log_fg"], relief="flat", padx=8, pady=8,
+        )
+        self.remote_log_box.pack(fill="both", expand=True)
+        self._remote_log_text = ""
+
+        for var in (
+            self.log_sync_owner_var,
+            self.log_sync_repo_var,
+            self.log_sync_token_var,
+            self.log_sync_interval_var,
+        ):
+            try:
+                var.trace_add("write", lambda *_a: self._schedule_save())
+            except Exception:
+                pass
+
+    def _get_log_sync_config(self) -> LogSyncConfig:
+        try:
+            interval = float(self.log_sync_interval_var.get())
+        except (TypeError, ValueError, tk.TclError):
+            interval = 30.0
+        return LogSyncConfig(
+            enabled=bool(self.log_sync_enabled_var.get()),
+            owner=self.log_sync_owner_var.get().strip(),
+            repo=self.log_sync_repo_var.get().strip(),
+            token=self.log_sync_token_var.get().strip(),
+            interval_min=interval,
+        )
+
+    def _on_log_sync_settings_changed(self) -> None:
+        self._schedule_save()
+        self._refresh_log_sync_status()
+        self._schedule_log_sync_timer()
+        self._show_toast("로그 동기화 설정 저장됨")
+
+    def _refresh_log_sync_status(self) -> None:
+        if not hasattr(self, "log_sync_status_var"):
+            return
+        cfg = self._get_log_sync_config() if hasattr(self, "log_sync_enabled_var") else None
+        last = load_last_sync()
+        if cfg and cfg.enabled and cfg.token:
+            base = "로그동기화 ON"
+        elif cfg and cfg.enabled:
+            base = "로그동기화 (토큰 없음)"
+        else:
+            base = "로그동기화 OFF"
+        if last.get("at"):
+            mark = "✓" if last.get("ok") else "✗"
+            base = f"{base} · {mark} {last.get('at')}"
+        self.log_sync_status_var.set(base)
+        if hasattr(self, "log_sync_detail_var"):
+            self.log_sync_detail_var.set(last.get("message") or f"이 PC: {get_pc_id()}")
+
+    def _schedule_log_sync_timer(self) -> None:
+        if self._log_sync_after_id:
+            try:
+                self.after_cancel(self._log_sync_after_id)
+            except Exception:
+                pass
+            self._log_sync_after_id = None
+        if not hasattr(self, "log_sync_enabled_var"):
+            return
+        cfg = self._get_log_sync_config()
+        if not cfg.is_ready():
+            return
+        minutes = max(5.0, float(cfg.interval_min or 30))
+        self._log_sync_after_id = self.after(int(minutes * 60 * 1000), self._on_log_sync_timer)
+
+    def _on_log_sync_timer(self) -> None:
+        self._log_sync_after_id = None
+        self._trigger_log_sync_upload(note="주기 업로드", silent=True)
+        self._schedule_log_sync_timer()
+
+    def _on_log_sync_upload_now(self) -> None:
+        cfg = self._get_log_sync_config()
+        if not cfg.token:
+            messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
+            return
+        if not cfg.enabled:
+            if not messagebox.askyesno("안내", "자동 업로드가 꺼져 있습니다. 지금 한 번만 업로드할까요?"):
+                return
+        self._trigger_log_sync_upload(note="수동 업로드", silent=False)
+
+    def _trigger_log_sync_upload(self, *, note: str = "", silent: bool = True) -> None:
+        cfg = self._get_log_sync_config()
+        if not cfg.token or not cfg.owner or not cfg.repo:
+            return
+        if self._log_sync_uploading:
+            return
+        self._log_sync_uploading = True
+
+        def worker() -> None:
+            ok, msg = upload_latest_log(cfg, note=note)
+
+            def done() -> None:
+                self._log_sync_uploading = False
+                self._refresh_log_sync_status()
+                if not silent:
+                    if ok:
+                        self._show_toast(msg)
+                    else:
+                        self._show_toast(msg, error=True)
+                        messagebox.showerror("업로드 실패", msg)
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_remote_logs_refresh(self) -> None:
+        cfg = self._get_log_sync_config()
+        if not cfg.token:
+            messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
+            return
+        self.log_sync_detail_var.set("원격 목록 불러오는 중…")
+
+        def worker() -> None:
+            entries, err = list_client_logs(cfg)
+
+            def done() -> None:
+                for row in self.remote_log_tree.get_children():
+                    self.remote_log_tree.delete(row)
+                if err:
+                    self.log_sync_detail_var.set(err)
+                    if "없음" not in err:
+                        messagebox.showerror("조회 실패", err)
+                    return
+                for e in entries:
+                    size = f"{e.size:,}" if e.size else "-"
+                    self.remote_log_tree.insert("", "end", iid=e.pc_id, values=(e.pc_id, size))
+                self.log_sync_detail_var.set(f"원격 PC {len(entries)}대")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_remote_log_select(self, _event=None) -> None:
+        sel = self.remote_log_tree.selection()
+        if not sel:
+            return
+        pc_id = sel[0]
+        cfg = self._get_log_sync_config()
+        self.log_sync_detail_var.set(f"{pc_id} 로그 불러오는 중…")
+
+        def worker() -> None:
+            text, err = fetch_client_log(cfg, pc_id)
+
+            def done() -> None:
+                self.remote_log_box.delete("1.0", "end")
+                if err:
+                    self._remote_log_text = ""
+                    self.remote_log_box.insert("1.0", err)
+                    self.log_sync_detail_var.set(err)
+                    return
+                self._remote_log_text = text
+                self.remote_log_box.insert("1.0", text)
+                self.log_sync_detail_var.set(f"{pc_id} · {len(text):,}자")
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_remote_log_copy(self) -> None:
+        text = self._remote_log_text or self.remote_log_box.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo("안내", "복사할 로그가 없습니다.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update_idletasks()
+        self._show_toast("원격 로그 복사됨")
+
+    def _on_remote_log_save(self) -> None:
+        from tkinter import filedialog
+
+        text = self._remote_log_text or self.remote_log_box.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo("안내", "저장할 로그가 없습니다.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="원격 로그 저장",
+            defaultextension=".log",
+            filetypes=[("Log", "*.log"), ("Text", "*.txt"), ("All", "*.*")],
+            initialfile=f"remote-{get_pc_id()}.log",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self._show_toast(f"저장됨: {path}")
+        except OSError as exc:
+            messagebox.showerror("저장 실패", str(exc))
+
     def _on_history_select(self, _event=None) -> None:
         pass
 
@@ -2119,6 +2433,13 @@ class BacklinkApp(tk.Tk):
 
         self.after(0, lambda: self.status_var.set(f"완료 — 성공 {ok} / 실패 {fail}"))
         self.after(0, lambda: self.progress_var.set(100))
+        self.after(
+            0,
+            lambda: self._trigger_log_sync_upload(
+                note=f"배치 종료 성공{ok}/실패{fail}",
+                silent=True,
+            ),
+        )
         return f"════ 결과: 성공 {ok} / 실패 {fail} / 전체 {len(jobs)} ════"
 
     def _on_batch_auto(self) -> None:
@@ -2181,6 +2502,12 @@ class BacklinkApp(tk.Tk):
         self.discoverer.stop()
         if self._save_after_id:
             self.after_cancel(self._save_after_id)
+        if self._log_sync_after_id:
+            try:
+                self.after_cancel(self._log_sync_after_id)
+            except Exception:
+                pass
+            self._log_sync_after_id = None
         self._save_app_state()
         self.writer.cancel()
         self._close_all_writers()

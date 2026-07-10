@@ -25,6 +25,20 @@ python main.py
 .\deploy.bat
 ```
 
+## 원격 로그 (관리자)
+
+다른 PC 실행 로그를 GitHub private 저장소에 모아 관리자 PC에서 조회합니다.
+
+1. GitHub에 **private** 저장소 `backlink-writer-logs` 생성 (비어 있어도 됨)
+2. [Fine-grained PAT](https://github.com/settings/personal-access-tokens) 발급  
+   - Repository access: `backlink-writer-logs`만  
+   - Permissions → Contents: **Read and write**
+3. 앱 **원격 로그** 탭에서 Owner / Repo / Token 입력 후 **로그 자동 업로드 켜기**
+4. 이용자 PC에도 동일 토큰을 넣으면 배치 종료·주기(기본 30분)마다 `clients/{PC-ID}/latest.log` 가 덮어쓰기 업로드됨
+5. 관리자 PC에서 **원격 PC 목록 새로고침** → PC 선택 → 로그 확인
+
+용량: PC당 최신 로그 1개(최대 약 512KB)만 유지. Free 계정으로 충분하며 Actions 분은 쓰지 않습니다.
+
 ## 릴리스
 
 https://github.com/lee3215-ko/backlink-auto-writer/releases

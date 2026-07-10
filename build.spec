@@ -43,6 +43,7 @@ LOCAL_MODULES = [
     "generic_comment",
     "html_mode",
     "link_utils",
+    "log_sync",
     "movable_type_comment",
     "page_guard",
     "page_snapshot",

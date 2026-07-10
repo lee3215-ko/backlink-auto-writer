@@ -43,6 +43,7 @@
     "generic_comment.py",
     "html_mode.py",
     "link_utils.py",
+    "log_sync.py",
     "main.py",
     "movable_type_comment.py",
     "page_guard.py",

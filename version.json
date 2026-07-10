@@ -1,13 +1,10 @@
 {
-    "version":  "1.0.7",
-    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472052757",
-    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.7/BacklinkWriter.zip",
-    "notes":  "error_messages.py 문법 오류 수정 + 로컬 모듈 번들 누락 수정",
-    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472052757",
-    "asset_id":  472052757,
+    "version":  "1.0.8",
+    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.8/BacklinkWriter.zip",
+    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.8/BacklinkWriter.zip",
+    "notes":  "GitHub 원격 로그 업로드·관리자 조회 탭",
     "download_urls":  [
-                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472052757",
-                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.7/BacklinkWriter.zip",
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.8/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ]
 }

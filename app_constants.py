@@ -1,6 +1,6 @@
 """앱 버전 및 업데이트 URL."""
 
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 APP_NAME = "BacklinkWriter"
 APP_DISPLAY_NAME = "백링크 자동 글쓰기"
 EXE_NAME = "BacklinkWriter.exe"
