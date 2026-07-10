@@ -1,9 +1,12 @@
 {
     "version":  "1.0.10",
-    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.10/BacklinkWriter.zip",
+    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472230723",
     "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.10/BacklinkWriter.zip",
     "notes":  "원격 실패 케이스 업로드 — 폼 미인식 등 스냅샷·DOM·HTML을 GitHub에 올려 관리자 PC에서 Cursor 보강 가능",
+    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472230723",
+    "asset_id":  472230723,
     "download_urls":  [
+                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/472230723",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.10/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ]
