@@ -1,10 +1,10 @@
 {
-    "version":  "1.0.6",
-    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.6/BacklinkWriter.zip",
-    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.6/BacklinkWriter.zip",
-    "notes":  "Playwright 내장 Chrome 경로 수정 (다른 PC BrowserType.launch 오류)",
+    "version":  "1.0.7",
+    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.7/BacklinkWriter.zip",
+    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.7/BacklinkWriter.zip",
+    "notes":  "error_messages 등 로컬 모듈 PyInstaller 번들 누락 수정 (ModuleNotFoundError)",
     "download_urls":  [
-                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.6/BacklinkWriter.zip",
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.7/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ]
 }

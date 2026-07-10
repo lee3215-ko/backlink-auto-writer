@@ -13,7 +13,15 @@ Set-Location $Root
 $GitSafe = (Resolve-Path $Root).Path
 function Invoke-RepoGit {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    & git.exe -c "safe.directory=$GitSafe" @Args
+    # git warning(stderr)이 $ErrorActionPreference=Stop 에서 예외로 끊기지 않게 함
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & git.exe -c "safe.directory=$GitSafe" @Args
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
 }
 
 function Write-TextNoBom([string]$Path, [string]$Text) {

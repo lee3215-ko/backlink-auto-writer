@@ -11,9 +11,62 @@ ICON_FILE = os.path.join(SPEC_DIR, "assets", "icon.ico")
 datas = [(ICON_FILE, "assets")] if os.path.isfile(ICON_FILE) else []
 datas += [(certifi.where(), "certifi")]
 binaries = []
+
+# 로컬 모듈 — Analysis 누락 방지 (다른 PC에서 ModuleNotFoundError 발생)
+LOCAL_MODULES = [
+    "ai_assist",
+    "app_constants",
+    "app_logger",
+    "app_paths",
+    "app_state",
+    "article_builder",
+    "batch_jobs",
+    "board_auto_search",
+    "board_catalog",
+    "board_discoverer",
+    "board_probe",
+    "board_probed",
+    "board_search",
+    "board_url",
+    "board_writer",
+    "browser_prefs",
+    "browser_session",
+    "browser_window",
+    "captcha_solver",
+    "comment_writer",
+    "custom_bbs_comment",
+    "editor_content",
+    "error_messages",
+    "excluded_urls",
+    "form_autofill",
+    "forum_url",
+    "generic_comment",
+    "html_mode",
+    "link_utils",
+    "movable_type_comment",
+    "page_guard",
+    "page_snapshot",
+    "phpbb_comment",
+    "post_history",
+    "sets_panel",
+    "startup_update",
+    "target_jobs",
+    "unsupported_report",
+    "update_splash",
+    "update_ui",
+    "updater",
+    "url_analyzer",
+    "url_recommend",
+    "win_ui",
+    "wordpress_comment",
+    "zeroboard_writer",
+]
+
 hiddenimports = [
     "tkinter",
     "tkinter.ttk",
+    "tkinter.messagebox",
+    "tkinter.scrolledtext",
     "playwright",
     "playwright.sync_api",
     "faker",
@@ -23,9 +76,7 @@ hiddenimports = [
     "PIL",
     "numpy",
     "certifi",
-    "app_paths",
-    "startup_update",
-    "update_splash",
+    *LOCAL_MODULES,
 ]
 
 # setuptools jaraco.text — pyi_rth_pkgres 가 Lorem ipsum.txt 를 읽음 (미포함 시 exe 시작 실패)
