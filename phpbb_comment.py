@@ -81,9 +81,17 @@ class PhpbbCommentWriter(BoardWriter):
 
         assert_page_accessible(self.page)
         self._dismiss_cookie_banners()
+        if self._is_forum_login_required():
+            raise RuntimeError(
+                "포럼 답글은 회원 로그인이 필요합니다. (게스트 답글 불가)"
+            )
         self._open_reply_form()
 
         if not self._has_reply_form():
+            if self._is_forum_login_required():
+                raise RuntimeError(
+                    "포럼 답글은 회원 로그인이 필요합니다. (게스트 답글 불가)"
+                )
             raise RuntimeError(
                 "포럼 답글 폼을 찾을 수 없습니다. (로그인 필요·답글 차단·목록 페이지일 수 있음)"
             )
@@ -119,7 +127,41 @@ class PhpbbCommentWriter(BoardWriter):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(500)
 
+    def _is_forum_login_required(self) -> bool:
+        page = self.page
+        assert page is not None
+        try:
+            return bool(
+                page.evaluate(
+                    """() => {
+                        if (document.querySelector('form#login, form[action*="ucp.php?mode=login"], #login, input[name="password"][type="password"]')) {
+                          const ta = document.querySelector('textarea[name="message"], #message');
+                          if (!ta) return true;
+                        }
+                        const t = (document.body && document.body.innerText || '').toLowerCase();
+                        const keys = [
+                          'must be logged in', 'you must log in', 'registered users only',
+                          '로그인 후', '로그인이 필요', '회원만', '게스트는',
+                        ];
+                        return keys.some(k => t.includes(k));
+                    }"""
+                )
+            )
+        except Exception:
+            return False
+
     def _has_reply_form(self) -> bool:
+        page = self.page
+        assert page is not None
+        try:
+            if page.evaluate(
+                """() => !!document.querySelector(
+                    'textarea[name="message"], #message, textarea[name="quickreply"], textarea[name="post_text"]'
+                )"""
+            ):
+                return True
+        except Exception:
+            pass
         return bool(self._find_first(MESSAGE_SELECTORS))
 
     def fill_comment(

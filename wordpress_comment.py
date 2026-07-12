@@ -111,11 +111,19 @@ class WordPressCommentWriter(BoardWriter):
 
         assert_page_accessible(self.page)
         self._dismiss_cookie_banners()
-        self._wait_for_comment_form(max_sec=45)
+        if self._is_member_only_comments():
+            raise RuntimeError(
+                "워드프레스 댓글은 회원 로그인 후에만 가능합니다. (비회원 폼 없음)"
+            )
+        self._wait_for_comment_form(max_sec=25)
         self._open_wp_comment_form()
         self._ensure_comment_fields_ready()
 
         if not self._has_wp_comment_form():
+            if self._is_member_only_comments():
+                raise RuntimeError(
+                    "워드프레스 댓글은 회원 로그인 후에만 가능합니다. (비회원 폼 없음)"
+                )
             detail = self._comment_form_miss_detail()
             raise RuntimeError(
                 "워드프레스 댓글 폼을 찾을 수 없습니다. (로딩 지연·댓글 차단·회원 전용)"
@@ -144,10 +152,50 @@ class WordPressCommentWriter(BoardWriter):
             raise RuntimeError(f"페이지 로딩 실패 (SSL·리다이렉트·차단): {last_err}") from last_err
         raise RuntimeError("페이지 로딩 실패 — URL을 확인해 주세요.")
 
+    def _is_member_only_comments(self) -> bool:
+        page = self.page
+        assert page is not None
+        try:
+            return bool(
+                page.evaluate(
+                    """() => {
+                        if (document.querySelector('.must-log-in, a.comment-reply-login')) return true;
+                        const r = document.querySelector('#respond, .comment-respond');
+                        if (!r) return false;
+                        if (document.querySelector('#commentform textarea[name="comment"], #comment, textarea[name="comment"]'))
+                            return false;
+                        const t = (r.innerText || '').toLowerCase();
+                        return (
+                            t.includes('must be logged') ||
+                            t.includes('logged in to') ||
+                            (t.includes('로그인') && (t.includes('댓글') || t.includes('reply') || t.includes('남겨')))
+                        );
+                    }"""
+                )
+            )
+        except Exception:
+            return False
+
     def _comment_form_in_dom(self) -> bool:
         """표시 여부와 무관 — DOM에 표준 WP 댓글 폼이 있는지."""
         page = self.page
         assert page is not None
+        for _ in range(3):
+            try:
+                if page.evaluate(
+                    """() => {
+                        const ta = document.querySelector('#comment, textarea[name="comment"]');
+                        if (!ta) return false;
+                        // 숨김·크기 0이어도 DOM 존재면 폼으로 인정
+                        return true;
+                    }"""
+                ):
+                    return True
+            except Exception:
+                try:
+                    page.wait_for_timeout(400)
+                except Exception:
+                    pass
         try:
             for sel in WP_FORM_ROOT_SELECTORS:
                 if page.locator(sel).count() > 0:
@@ -567,7 +615,7 @@ class WordPressCommentWriter(BoardWriter):
         page = self.page
         assert page is not None
         url = (page.url or "").lower()
-        if "unapproved" in url or "moderation-hash" in url:
+        if "unapproved" in url or "moderation-hash" in url or "comment-page" in url:
             return "moderation"
         submit_state = detect_comment_submit_message(page)
         if submit_state == "error":
@@ -586,12 +634,29 @@ class WordPressCommentWriter(BoardWriter):
             body = ""
         wait_kw = (
             "대기 중", "moderation", "검토", "awaiting", "held for",
-            "승인", "보호 중", "확인 중",
+            "승인", "보호 중", "확인 중", "duplicate", "중복",
+            "감사합니다", "thank you for", "your comment is awaiting",
+            "댓글이 등록", "검토 후",
         )
         if any(k in body for k in wait_kw):
             return "moderation"
+        # 제출 후 입력란이 비워졌으면 서버가 접수(승인 대기)한 경우가 많음
+        try:
+            cleared = page.evaluate(
+                """() => {
+                    const ta = document.querySelector('#comment, textarea[name="comment"]');
+                    if (!ta) return true; // 폼 사라짐 = 제출 후 리다이렉트성
+                    return !(ta.value || '').trim();
+                }"""
+            )
+            if cleared and self.last_name:
+                return "moderation"
+        except Exception:
+            pass
         if keyword and keyword in (page.content() or ""):
             return "success"
+        if self.last_name and self.last_name.lower() in body:
+            return "moderation"
         return "fail"
 
     def fill_comment(
@@ -617,6 +682,28 @@ class WordPressCommentWriter(BoardWriter):
             self._fill_wp_field(WP_URL_SELECTORS, primary_url, role_name="Website")
         if not self._fill_wp_comment(body):
             raise RuntimeError("댓글 입력란을 찾을 수 없습니다.")
+        # 이름/이메일이 비어 있으면 JS로 강제 입력 (일부 테마 visibility 이슈)
+        try:
+            page = self.page
+            assert page is not None
+            page.evaluate(
+                """({name, email, url}) => {
+                    const set = (sel, v) => {
+                      const el = document.querySelector(sel);
+                      if (el && !(el.value||'').trim()) {
+                        el.value = v;
+                        el.dispatchEvent(new Event('input', {bubbles:true}));
+                        el.dispatchEvent(new Event('change', {bubbles:true}));
+                      }
+                    };
+                    set('#author, input[name="author"]', name);
+                    set('#email, input[name="email"]', email);
+                    if (url) set('#url, input[name="url"]', url);
+                }""",
+                {"name": self.last_name, "email": "writer@example.com", "url": primary_url or ""},
+            )
+        except Exception:
+            pass
 
         self._accept_wp_comment_extras()
 

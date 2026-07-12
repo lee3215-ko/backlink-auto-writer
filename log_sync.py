@@ -158,6 +158,58 @@ def _api_request(
         return 0, {"message": str(exc)}
 
 
+def verify_repo_access(cfg: LogSyncConfig) -> tuple[bool, str]:
+    """토큰·private 저장소 접근 가능 여부. 404는 대개 권한 부족."""
+    if not cfg.token:
+        return False, "GitHub Token이 비어 있습니다."
+    if not cfg.owner or not cfg.repo:
+        return False, "Owner/Repo를 입력해 주세요."
+    url = f"https://api.github.com/repos/{cfg.owner}/{cfg.repo}"
+    code, body = _api_request("GET", url, token=cfg.token)
+    if code == 200:
+        private = bool(body.get("private")) if isinstance(body, dict) else False
+        # Contents 쓰기 가능 여부 확인 — README 또는 루트
+        probe = _api_request(
+            "GET",
+            f"https://api.github.com/repos/{cfg.owner}/{cfg.repo}/contents/",
+            token=cfg.token,
+        )
+        if probe[0] in (200, 404):
+            kind = "private" if private else "public"
+            return True, f"연결 OK — {cfg.owner}/{cfg.repo} ({kind})"
+        return False, (
+            f"저장소는 보이지만 Contents 읽기 실패 HTTP {probe[0]}. "
+            "PAT에 Contents: Read and write 권한을 주세요."
+        )
+    if code == 401:
+        return False, "토큰이 잘못되었거나 만료되었습니다. 새 PAT를 발급해 주세요."
+    if code == 403:
+        return False, "토큰 권한이 부족합니다 (403). repo/Contents 쓰기 권한을 확인하세요."
+    if code == 404:
+        return False, (
+            f"저장소 접근 불가 (404): {cfg.owner}/{cfg.repo}\n\n"
+            "private 저장소인데 PAT에 권한이 없으면 GitHub가 404를 줍니다.\n"
+            "해결: Fine-grained PAT → Repository access에 "
+            f"'{cfg.repo}' 추가 → Permissions → Contents: Read and write"
+        )
+    err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
+    return False, f"저장소 접근 실패 HTTP {code}: {err}"
+
+
+def _auth_hint_for_http(code: int, owner: str, repo: str, err: str) -> str:
+    if code in (401, 403):
+        return (
+            f" — 토큰 권한 문제. Fine-grained PAT에 {owner}/{repo} "
+            "Contents Read/Write를 부여하세요."
+        )
+    if code == 404:
+        return (
+            f" — private 저장소 접근 권한이 없거나 이름이 틀립니다. "
+            f"대상: {owner}/{repo} (PAT에 Contents: Read and write)"
+        )
+    return ""
+
+
 def _contents_url(owner: str, repo: str, path: str) -> str:
     quoted = "/".join(urllib.parse.quote(p) for p in path.strip("/").split("/"))
     return f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted}"
@@ -176,8 +228,15 @@ def get_file_sha(cfg: LogSyncConfig, path: str) -> str | None:
 
 def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]:
     """PC별 latest.log 덮어쓰기. 실패해도 예외 없이 (ok, message) 반환."""
-    if not cfg.is_ready():
+    if not cfg.can_upload():
+        return False, "로그 동기화 미설정 (토큰·저장소 확인)"
+    if cfg.enabled is False and not cfg.token:
         return False, "로그 동기화 미설정 (토큰·저장소·켜짐 확인)"
+
+    ok_access, access_msg = verify_repo_access(cfg)
+    if not ok_access:
+        _save_last_sync(False, access_msg)
+        return False, access_msg
 
     path = _client_log_path()
     content = build_upload_payload(note)
@@ -186,8 +245,6 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
         "message": f"log sync {get_pc_id()} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "content": b64,
     }
-    # 빈 저장소는 branch 지정 시 404 — 기본 브랜치 생성에 맡김
-    # 파일이 이미 있으면 sha 필요
     sha = get_file_sha(cfg, path)
     if sha:
         payload["sha"] = sha
@@ -200,7 +257,6 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
         _save_last_sync(True, msg)
         return True, msg
 
-    # 재시도 1회 (sha 충돌·빈 저장소 branch 이슈)
     if code in (404, 409, 422):
         payload2 = dict(payload)
         payload2.pop("branch", None)
@@ -219,14 +275,8 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
             return True, msg
 
     err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
-    if code == 404:
-        hint = (
-            " — 저장소가 비어 있거나(main 없음)·이름/토큰 권한(contents:write)을 확인하세요. "
-            f"대상: {cfg.owner}/{cfg.repo}"
-        )
-        msg = f"원격 로그 업로드 실패 HTTP {code}: {err}{hint}"
-    else:
-        msg = f"원격 로그 업로드 실패 HTTP {code}: {err}"
+    hint = _auth_hint_for_http(code, cfg.owner, cfg.repo, err)
+    msg = f"원격 로그 업로드 실패 HTTP {code}: {err}{hint}"
     log.info(msg)
     _save_last_sync(False, msg)
     return False, msg
@@ -467,7 +517,8 @@ def upload_failure_case(cfg: LogSyncConfig, case: dict) -> tuple[bool, str]:
     )
     if code not in (200, 201):
         err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
-        msg = f"실패 케이스 업로드 실패 HTTP {code}: {err}"
+        hint = _auth_hint_for_http(code, cfg.owner, cfg.repo, err)
+        msg = f"실패 케이스 업로드 실패 HTTP {code}: {err}{hint}"
         log.info(msg)
         return False, msg
 

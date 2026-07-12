@@ -60,6 +60,7 @@ from log_sync import (
     upload_failure_case,
     upload_failure_cases,
     upload_latest_log,
+    verify_repo_access,
 )
 
 COLORS = {
@@ -137,6 +138,8 @@ class BacklinkApp(tk.Tk):
         self._log_sync_after_id: str | None = None
         self._log_sync_uploading = False
         self._failure_uploading = False
+        self._remote_upload_blocked = False
+        self._remote_upload_block_msg = ""
         self._remote_failure_cases: list = []
         self._remote_failure_detail: dict | None = None
 
@@ -1846,6 +1849,9 @@ class BacklinkApp(tk.Tk):
         ttk.Button(btn_row, text="설정 저장", command=self._on_log_sync_settings_changed).pack(
             side="left", padx=(0, 6)
         )
+        ttk.Button(btn_row, text="연결 테스트", command=self._on_log_sync_test_connection).pack(
+            side="left", padx=(0, 6)
+        )
         ttk.Button(btn_row, text="지금 이 PC 로그 업로드", command=self._on_log_sync_upload_now).pack(
             side="left", padx=(0, 6)
         )
@@ -2000,6 +2006,30 @@ class BacklinkApp(tk.Tk):
         self._trigger_log_sync_upload(note="주기 업로드", silent=True)
         self._schedule_log_sync_timer()
 
+    def _on_log_sync_test_connection(self) -> None:
+        cfg = self._get_log_sync_config()
+        if not cfg.token:
+            messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
+            return
+
+        def worker() -> None:
+            ok, msg = verify_repo_access(cfg)
+
+            def done() -> None:
+                self.log_sync_detail_var.set(msg.split("\n")[0][:120])
+                if ok:
+                    self._remote_upload_blocked = False
+                    self._remote_upload_block_msg = ""
+                    messagebox.showinfo("연결 테스트", msg)
+                else:
+                    self._remote_upload_blocked = True
+                    self._remote_upload_block_msg = msg
+                    messagebox.showerror("연결 실패", msg)
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _on_log_sync_upload_now(self) -> None:
         cfg = self._get_log_sync_config()
         if not cfg.token:
@@ -2008,13 +2038,32 @@ class BacklinkApp(tk.Tk):
         if not cfg.enabled:
             if not messagebox.askyesno("안내", "자동 업로드가 꺼져 있습니다. 지금 한 번만 업로드할까요?"):
                 return
+        self._remote_upload_blocked = False
         self._trigger_log_sync_upload(note="수동 업로드", silent=False)
+
+    def _note_remote_upload_result(self, ok: bool, msg: str) -> None:
+        """404/401이면 배치 중 반복 업로드를 막아 로그 스팸·지연을 줄인다."""
+        if ok:
+            self._remote_upload_blocked = False
+            self._remote_upload_block_msg = ""
+            return
+        if any(x in msg for x in ("HTTP 404", "HTTP 401", "HTTP 403", "저장소 접근 불가", "토큰이 잘못")):
+            if not self._remote_upload_blocked:
+                self._log(
+                    "[원격업로드] 권한/토큰 문제로 자동 업로드를 멈춥니다. "
+                    "원격 로그 탭「연결 테스트」후 PAT에 backlink-writer-logs Contents 권한을 주세요.",
+                    "err",
+                )
+            self._remote_upload_blocked = True
+            self._remote_upload_block_msg = msg
 
     def _trigger_log_sync_upload(self, *, note: str = "", silent: bool = True) -> None:
         cfg = self._get_log_sync_config()
         if not cfg.token or not cfg.owner or not cfg.repo:
             return
         if self._log_sync_uploading:
+            return
+        if silent and self._remote_upload_blocked:
             return
         self._log_sync_uploading = True
 
@@ -2023,6 +2072,7 @@ class BacklinkApp(tk.Tk):
 
             def done() -> None:
                 self._log_sync_uploading = False
+                self._note_remote_upload_result(ok, msg)
                 self._refresh_log_sync_status()
                 if not silent:
                     if ok:
@@ -2180,6 +2230,8 @@ class BacklinkApp(tk.Tk):
     def _queue_failure_case_upload(self, case: dict | None) -> None:
         if not case:
             return
+        if self._remote_upload_blocked:
+            return
         cfg = self._get_log_sync_config()
         if not cfg.can_upload():
             return
@@ -2190,9 +2242,10 @@ class BacklinkApp(tk.Tk):
             ok, msg = upload_failure_case(cfg, case)
 
             def done() -> None:
+                self._note_remote_upload_result(ok, msg)
                 if ok:
                     self._log(f"[실패업로드] {msg}", "info")
-                else:
+                elif not self._remote_upload_blocked:
                     self._log(f"[실패업로드] {msg}", "err")
 
             self.after(0, done)
