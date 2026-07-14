@@ -20,3 +20,5 @@ logs/
 # Secrets
 .env
 *.env
+log_sync_token*.txt
+*_token*.txt

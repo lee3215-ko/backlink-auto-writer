@@ -13,15 +13,44 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from app_logger import LOG_FILE, log
-from app_paths import data_file
+from app_paths import data_file, get_install_dir
 
 MAX_UPLOAD_BYTES = 512 * 1024
 DEFAULT_OWNER = "lee3215-ko"
 DEFAULT_REPO = "backlink-writer-logs"
 USER_AGENT = "BacklinkWriter-LogSync/1.0"
+BUNDLED_TOKEN_NAME = "log_sync_token.txt"
+
+
+def load_bundled_token() -> str:
+    """배포 zip에 포함된 관리자 토큰 — 이용자 PC가 PAT 발급 없이 업로드 가능."""
+    candidates = [
+        get_install_dir() / BUNDLED_TOKEN_NAME,
+        get_install_dir() / "log_sync_token_for_clients.txt",
+        Path(__file__).resolve().parent / BUNDLED_TOKEN_NAME,
+        Path(__file__).resolve().parent / "log_sync_token_for_clients.txt",
+    ]
+    for path in candidates:
+        try:
+            if path.is_file():
+                tok = path.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+                if tok and not tok.startswith("#"):
+                    return tok
+        except OSError:
+            continue
+    env = (os.environ.get("BACKLINK_LOG_SYNC_TOKEN") or "").strip()
+    return env
+
+
+def resolve_token(explicit: str = "") -> str:
+    explicit = (explicit or "").strip()
+    if explicit:
+        return explicit
+    return load_bundled_token()
 
 
 @dataclass
@@ -56,11 +85,14 @@ class LogSyncConfig:
         }
 
     def is_ready(self) -> bool:
-        return bool(self.enabled and self.owner and self.repo and self.token)
+        return bool(self.enabled and self.owner and self.repo and self.effective_token())
 
     def can_upload(self) -> bool:
-        """자동 켜짐 여부와 무관 — 토큰·저장소만 있으면 수동 업로드 가능."""
-        return bool(self.owner and self.repo and self.token)
+        """자동 켜짐 여부와 무관 — 토큰(입력 또는 번들)·저장소만 있으면 업로드 가능."""
+        return bool(self.owner and self.repo and self.effective_token())
+
+    def effective_token(self) -> str:
+        return resolve_token(self.token)
 
 
 @dataclass
@@ -160,19 +192,19 @@ def _api_request(
 
 def verify_repo_access(cfg: LogSyncConfig) -> tuple[bool, str]:
     """토큰·private 저장소 접근 가능 여부. 404는 대개 권한 부족."""
-    if not cfg.token:
-        return False, "GitHub Token이 비어 있습니다."
+    if not cfg.effective_token():
+        return False, "GitHub Token이 비어 있습니다. (배포 토큰 파일도 없음)"
     if not cfg.owner or not cfg.repo:
         return False, "Owner/Repo를 입력해 주세요."
     url = f"https://api.github.com/repos/{cfg.owner}/{cfg.repo}"
-    code, body = _api_request("GET", url, token=cfg.token)
+    code, body = _api_request("GET", url, token=cfg.effective_token())
     if code == 200:
         private = bool(body.get("private")) if isinstance(body, dict) else False
         # Contents 쓰기 가능 여부 확인 — README 또는 루트
         probe = _api_request(
             "GET",
             f"https://api.github.com/repos/{cfg.owner}/{cfg.repo}/contents/",
-            token=cfg.token,
+            token=cfg.effective_token(),
         )
         if probe[0] in (200, 404):
             kind = "private" if private else "public"
@@ -220,7 +252,7 @@ def _client_log_path(pc_id: str | None = None) -> str:
 
 
 def get_file_sha(cfg: LogSyncConfig, path: str) -> str | None:
-    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token)
+    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, path), token=cfg.effective_token())
     if code == 200 and isinstance(body, dict):
         return body.get("sha")
     return None
@@ -230,7 +262,7 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
     """PC별 latest.log 덮어쓰기. 실패해도 예외 없이 (ok, message) 반환."""
     if not cfg.can_upload():
         return False, "로그 동기화 미설정 (토큰·저장소 확인)"
-    if cfg.enabled is False and not cfg.token:
+    if cfg.enabled is False and not cfg.effective_token():
         return False, "로그 동기화 미설정 (토큰·저장소·켜짐 확인)"
 
     ok_access, access_msg = verify_repo_access(cfg)
@@ -250,7 +282,7 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
         payload["sha"] = sha
         payload["branch"] = "main"
 
-    code, body = _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload)
+    code, body = _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.effective_token(), payload=payload)
     if code in (200, 201):
         msg = f"원격 로그 업로드 완료 ({path}, {len(content)}자)"
         log.info(msg)
@@ -266,7 +298,7 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
         elif "sha" in payload2:
             del payload2["sha"]
         code, body = _api_request(
-            "PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload2
+            "PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.effective_token(), payload=payload2
         )
         if code in (200, 201):
             msg = f"원격 로그 업로드 완료(재시도) ({path})"
@@ -283,9 +315,9 @@ def upload_latest_log(cfg: LogSyncConfig, *, note: str = "") -> tuple[bool, str]
 
 
 def list_client_logs(cfg: LogSyncConfig) -> tuple[list[ClientLogEntry], str]:
-    if not cfg.token or not cfg.owner or not cfg.repo:
+    if not cfg.can_upload():
         return [], "토큰·저장소 설정 필요"
-    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, "clients"), token=cfg.token)
+    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, "clients"), token=cfg.effective_token())
     if code == 404:
         return [], "clients/ 폴더 없음 — 아직 업로드된 PC가 없습니다"
     if code != 200:
@@ -302,7 +334,7 @@ def list_client_logs(cfg: LogSyncConfig) -> tuple[list[ClientLogEntry], str]:
         if not pc_id:
             continue
         log_path = f"clients/{pc_id}/latest.log"
-        fcode, fbody = _api_request("GET", _contents_url(cfg.owner, cfg.repo, log_path), token=cfg.token)
+        fcode, fbody = _api_request("GET", _contents_url(cfg.owner, cfg.repo, log_path), token=cfg.effective_token())
         size = 0
         sha = ""
         updated = ""
@@ -317,10 +349,10 @@ def list_client_logs(cfg: LogSyncConfig) -> tuple[list[ClientLogEntry], str]:
 
 
 def fetch_client_log(cfg: LogSyncConfig, pc_id: str) -> tuple[str, str]:
-    if not cfg.token:
+    if not cfg.effective_token():
         return "", "토큰 필요"
     path = _client_log_path(pc_id)
-    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token)
+    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, path), token=cfg.effective_token())
     if code != 200 or not isinstance(body, dict):
         err = body.get("message", str(body)) if isinstance(body, dict) else str(body)
         return "", f"조회 실패 HTTP {code}: {err}"
@@ -406,7 +438,7 @@ def _put_text_file(cfg: LogSyncConfig, path: str, text: str, message: str) -> tu
     if sha:
         payload["sha"] = sha
         payload["branch"] = "main"
-    code, body = _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload)
+    code, body = _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.effective_token(), payload=payload)
     if code in (200, 201):
         return code, body
     if code in (404, 409, 422):
@@ -417,12 +449,12 @@ def _put_text_file(cfg: LogSyncConfig, path: str, text: str, message: str) -> tu
             payload2["sha"] = sha2
         elif "sha" in payload2:
             del payload2["sha"]
-        return _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token, payload=payload2)
+        return _api_request("PUT", _contents_url(cfg.owner, cfg.repo, path), token=cfg.effective_token(), payload=payload2)
     return code, body
 
 
 def _get_json_file(cfg: LogSyncConfig, path: str) -> tuple[Any | None, str]:
-    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, path), token=cfg.token)
+    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, path), token=cfg.effective_token())
     if code == 404:
         return None, ""
     if code != 200 or not isinstance(body, dict):
@@ -559,7 +591,7 @@ def upload_failure_cases(cfg: LogSyncConfig, cases: list[dict]) -> tuple[int, in
 def list_failure_cases(cfg: LogSyncConfig, *, limit: int = 120) -> tuple[list[FailureCaseEntry], str]:
     if not cfg.can_upload():
         return [], "토큰·저장소 설정 필요"
-    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, "failures"), token=cfg.token)
+    code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, "failures"), token=cfg.effective_token())
     if code == 404:
         return [], "failures/ 없음 — 아직 업로드된 실패 케이스가 없습니다"
     if code != 200:
@@ -598,7 +630,7 @@ def list_failure_cases(cfg: LogSyncConfig, *, limit: int = 120) -> tuple[list[Fa
             continue
         # index 없으면 디렉터리 나열
         dcode, dbody = _api_request(
-            "GET", _contents_url(cfg.owner, cfg.repo, f"failures/{pc_id}"), token=cfg.token
+            "GET", _contents_url(cfg.owner, cfg.repo, f"failures/{pc_id}"), token=cfg.effective_token()
         )
         if dcode != 200 or not isinstance(dbody, list):
             continue

@@ -1,13 +1,10 @@
 {
-    "version":  "1.0.11",
-    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/474097331",
-    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.11/BacklinkWriter.zip",
-    "notes":  "로그 업로드 404=PAT 권한 진단/연결테스트; WP DOM폼·회원전용 감지; 포럼 로그인 조기종료; 승인대기 soft-success; 실패업로드 404 스팸 차단",
-    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/474097331",
-    "asset_id":  474097331,
+    "version":  "1.0.12",
+    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
+    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
+    "notes":  "로그 업로드: 배포 zip에 관리자 토큰 포함 — 다른 PC는 PAT 발급 없이「배포 토큰 적용」후 연결 테스트",
     "download_urls":  [
-                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/474097331",
-                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.11/BacklinkWriter.zip",
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ]
 }

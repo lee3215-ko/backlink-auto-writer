@@ -56,7 +56,9 @@ from log_sync import (
     get_pc_id,
     list_client_logs,
     list_failure_cases,
+    load_bundled_token,
     load_last_sync,
+    resolve_token,
     upload_failure_case,
     upload_failure_cases,
     upload_latest_log,
@@ -1852,6 +1854,9 @@ class BacklinkApp(tk.Tk):
         ttk.Button(btn_row, text="연결 테스트", command=self._on_log_sync_test_connection).pack(
             side="left", padx=(0, 6)
         )
+        ttk.Button(btn_row, text="배포 토큰 적용", command=self._on_log_sync_apply_bundled_token).pack(
+            side="left", padx=(0, 6)
+        )
         ttk.Button(btn_row, text="지금 이 PC 로그 업로드", command=self._on_log_sync_upload_now).pack(
             side="left", padx=(0, 6)
         )
@@ -1870,9 +1875,8 @@ class BacklinkApp(tk.Tk):
         )
 
         help_txt = (
-            "1) GitHub private 저장소 backlink-writer-logs + PAT(Contents)  "
-            "2) 이용자 PC: 로그·실패 자동 업로드 켜기  "
-            "3) 관리자: 원격 실패 목록 → Cursor 보고서로 기능 보강"
+            "다른 PC는 최신 zip에 포함된 배포 토큰을 쓰거나, 「배포 토큰 적용」후 연결 테스트하세요. "
+            "직접 PAT를 쓸 경우 반드시 lee3215-ko 계정에서 backlink-writer-logs Contents 쓰기 권한으로 발급하세요."
         )
         ttk.Label(cfg_f, text=help_txt, style="Hint.TLabel", wraplength=980).grid(
             row=4, column=0, columnspan=5, sticky="w", pady=(8, 0)
@@ -1973,7 +1977,7 @@ class BacklinkApp(tk.Tk):
             return
         cfg = self._get_log_sync_config() if hasattr(self, "log_sync_enabled_var") else None
         last = load_last_sync()
-        if cfg and cfg.enabled and cfg.token:
+        if cfg and cfg.enabled and cfg.effective_token():
             base = "로그동기화 ON"
         elif cfg and cfg.enabled:
             base = "로그동기화 (토큰 없음)"
@@ -2006,9 +2010,35 @@ class BacklinkApp(tk.Tk):
         self._trigger_log_sync_upload(note="주기 업로드", silent=True)
         self._schedule_log_sync_timer()
 
+    def _ensure_log_sync_token_filled(self) -> None:
+        """토큰 칸이 비면 배포 zip 번들 토큰을 채운다."""
+        if not hasattr(self, "log_sync_token_var"):
+            return
+        if self.log_sync_token_var.get().strip():
+            return
+        bundled = load_bundled_token()
+        if bundled:
+            self.log_sync_token_var.set(bundled)
+
+    def _on_log_sync_apply_bundled_token(self) -> None:
+        bundled = load_bundled_token()
+        if not bundled:
+            messagebox.showwarning(
+                "안내",
+                "배포 토큰 파일(log_sync_token.txt)이 없습니다.\n"
+                "최신 BacklinkWriter.zip 전체로 업데이트하거나,\n"
+                "관리자(lee3215-ko)가 발급한 PAT를 토큰 칸에 붙여넣으세요.",
+            )
+            return
+        self.log_sync_token_var.set(bundled)
+        self._schedule_save()
+        self._remote_upload_blocked = False
+        self._show_toast("배포 토큰 적용됨 — 연결 테스트를 눌러 주세요")
+
     def _on_log_sync_test_connection(self) -> None:
+        self._ensure_log_sync_token_filled()
         cfg = self._get_log_sync_config()
-        if not cfg.token:
+        if not cfg.effective_token():
             messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
             return
 
@@ -2031,8 +2061,9 @@ class BacklinkApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_log_sync_upload_now(self) -> None:
+        self._ensure_log_sync_token_filled()
         cfg = self._get_log_sync_config()
-        if not cfg.token:
+        if not cfg.effective_token():
             messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
             return
         if not cfg.enabled:
@@ -2065,6 +2096,9 @@ class BacklinkApp(tk.Tk):
             return
         if silent and self._remote_upload_blocked:
             return
+        # 입력 칸이 비어도 번들 토큰으로 업로드
+        if not cfg.effective_token():
+            return
         self._log_sync_uploading = True
 
         def worker() -> None:
@@ -2086,8 +2120,9 @@ class BacklinkApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_remote_logs_refresh(self) -> None:
+        self._ensure_log_sync_token_filled()
         cfg = self._get_log_sync_config()
-        if not cfg.token:
+        if not cfg.effective_token():
             messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
             return
         self.log_sync_detail_var.set("원격 목록 불러오는 중…")
@@ -2253,8 +2288,9 @@ class BacklinkApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_upload_local_failures(self) -> None:
+        self._ensure_log_sync_token_filled()
         cfg = self._get_log_sync_config()
-        if not cfg.token:
+        if not cfg.effective_token():
             messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
             return
         fails = self.history.get_recent_failures(40)
@@ -2318,8 +2354,9 @@ class BacklinkApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_remote_failures_refresh(self) -> None:
+        self._ensure_log_sync_token_filled()
         cfg = self._get_log_sync_config()
-        if not cfg.token:
+        if not cfg.effective_token():
             messagebox.showwarning("안내", "GitHub Token을 입력해 주세요.")
             return
         self.log_sync_detail_var.set("원격 실패 목록 불러오는 중…")

@@ -245,7 +245,14 @@ def apply_to_app(app, state: dict | None = None) -> None:
     if hasattr(app, "log_sync_repo_var"):
         app.log_sync_repo_var.set(ls.get("repo", "backlink-writer-logs"))
     if hasattr(app, "log_sync_token_var"):
-        app.log_sync_token_var.set(ls.get("token", ""))
+        tok = (ls.get("token") or "").strip()
+        if not tok:
+            try:
+                from log_sync import load_bundled_token
+                tok = load_bundled_token()
+            except Exception:
+                tok = ""
+        app.log_sync_token_var.set(tok)
     if hasattr(app, "log_sync_interval_var"):
         app.log_sync_interval_var.set(ls.get("interval_min", 30))
     if hasattr(app, "log_sync_failures_auto_var"):
