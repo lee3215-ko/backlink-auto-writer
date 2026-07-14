@@ -1,9 +1,12 @@
 {
     "version":  "1.0.12",
-    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
+    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/476235151",
     "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
     "notes":  "로그 업로드: 배포 zip에 관리자 토큰 포함 — 다른 PC는 PAT 발급 없이「배포 토큰 적용」후 연결 테스트",
+    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/476235151",
+    "asset_id":  476235151,
     "download_urls":  [
+                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/476235151",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ]
