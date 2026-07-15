@@ -1,9 +1,12 @@
 {
     "version":  "1.0.13",
-    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.13/BacklinkWriter.zip",
+    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477483767",
     "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.13/BacklinkWriter.zip",
     "notes":  "자동화 불가 사이트(gruposanvicente 등) 차단 목록 — 업데이트/시작 시 이용자 URL·이력에서 자동 삭제",
+    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477483767",
+    "asset_id":  477483767,
     "download_urls":  [
+                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477483767",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.13/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ],
