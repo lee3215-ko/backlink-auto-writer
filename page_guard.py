@@ -38,6 +38,28 @@ def assert_page_accessible(page: Page) -> None:
         raise RuntimeError("페이지 접근이 차단되었습니다.")
 
 
+def assert_native_comment_system(page: Page) -> None:
+    """Disqus 등 외부 댓글 시스템이면 자동화 불가 예외."""
+    try:
+        html = (page.content() or "").lower()
+    except Exception:
+        html = ""
+    markers = (
+        "disqus.com/embed.js",
+        "disqus_thread",
+        "disqus.com/count.js",
+        "data-disqus",
+    )
+    if any(m in html for m in markers):
+        raise RuntimeError(
+            "Disqus 외부 댓글 시스템입니다 — 자체 댓글 폼이 없어 자동 등록할 수 없습니다."
+        )
+    if "comments.facebook.com" in html or "fb-comments" in html:
+        raise RuntimeError(
+            "Facebook 댓글 플러그인입니다 — 자체 댓글 폼이 없어 자동 등록할 수 없습니다."
+        )
+
+
 def page_has_comment_by_author(page: Page, author: str, *, keyword: str = "") -> bool:
     """댓글 목록 영역에서 작성자·키워드 확인."""
     if not author:

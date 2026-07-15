@@ -1,25 +1,160 @@
 {
-    "version":  "1.0.16",
-    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477511086",
-    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.16/BacklinkWriter.zip",
-    "notes":  "실패 케이스 전체 Cursor 보고서 복사/저장 추가",
-    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477511086",
-    "asset_id":  477511086,
+    "version":  "1.0.18",
+    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.18/BacklinkWriter.zip",
+    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.18/BacklinkWriter.zip",
+    "notes":  "실패52건: 수정불가 사이트 차단목록, Disqus 조기감지, WP 제출버튼 탐색 강화",
     "download_urls":  [
-                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477511086",
-                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.16/BacklinkWriter.zip",
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.18/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ],
     "blocked_sites":  [
                           {
                               "host":  "gruposanvicentegalapagos.com",
                               "urls":  [
-                                           "https://gruposanvicentegalapagos.com/santa-cruz",
-                                           "http://gruposanvicentegalapagos.com/santa-cruz",
-                                           "https://www.gruposanvicentegalapagos.com/santa-cruz",
-                                           "http://www.gruposanvicentegalapagos.com/santa-cruz"
+
                                        ],
-                              "reason":  "HTTP 406 Not Acceptable / 로딩 실패 — 자동화 접속 불가"
+                              "reason":  "HTTP 406 / 로딩 실패 — 자동화 접속 불가"
+                          },
+                          {
+                              "host":  "livefunnel.kr",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "페이지 404·이동 오류 — 대상 URL 소실"
+                          },
+                          {
+                              "host":  "horoskop.blog.bg",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "instrumed-surgical.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "kta.inkindo.org",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "kubalitours.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "magnuscadeaux.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "motorreview.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "noticiasdesanmateo.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "npcnewstv.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "persianhandicrafts.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "petstepin.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "WAF 차단"
+                          },
+                          {
+                              "host":  "ko.js-nut.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "Cloudflare 봇 차단"
+                          },
+                          {
+                              "host":  "ko.wabon-metals.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "Cloudflare 봇 차단"
+                          },
+                          {
+                              "host":  "katiethecreativelady.com",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "Disqus 외부 댓글 — 자체 폼 없음"
+                          },
+                          {
+                              "host":  "mail.blogcaycanh.vn",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "SSL 인증서 호스트 불일치"
+                          },
+                          {
+                              "host":  "lalescu.ro",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "포럼 접근 오류(An error has occurred)"
+                          },
+                          {
+                              "host":  "mahoningvalley.info",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "포럼 접근 오류(An error has occurred)"
+                          },
+                          {
+                              "host":  "openxcom.org",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "포럼 Cloudflare/접근 오류"
+                          },
+                          {
+                              "host":  "homematic-forum.de",
+                              "urls":  [
+
+                                       ],
+                              "reason":  "로딩 시간 초과·응답 없음"
+                          },
+                          {
+                              "host":  "hanamwellness.co.kr",
+                              "urls":  [
+                                           "https://hanamwellness.co.kr/bbs/board.php?bo_table=notice",
+                                           "http://hanamwellness.co.kr/bbs/board.php?bo_table=notice"
+                                       ],
+                              "reason":  "공지 게시판 — 비회원 글쓰기 폼 없음"
                           }
                       ]
 }

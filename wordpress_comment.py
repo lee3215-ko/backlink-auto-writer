@@ -9,7 +9,13 @@ from article_builder import _pick_comment_links, build_comment_content
 from board_writer import BoardWriter, random_english_name
 from board_url import url_access_candidates
 from link_utils import normalize_backlink_url, pick_primary_link
-from page_guard import assert_page_accessible, detect_comment_submit_message, page_contains_backlink, page_has_comment_by_author
+from page_guard import (
+    assert_native_comment_system,
+    assert_page_accessible,
+    detect_comment_submit_message,
+    page_contains_backlink,
+    page_has_comment_by_author,
+)
 
 WP_COMMENT_SELECTORS = [
     "#comment",
@@ -110,6 +116,7 @@ class WordPressCommentWriter(BoardWriter):
         self.page.wait_for_timeout(2000)
 
         assert_page_accessible(self.page)
+        assert_native_comment_system(self.page)
         self._dismiss_cookie_banners()
         if self._is_member_only_comments():
             raise RuntimeError(
@@ -598,10 +605,34 @@ class WordPressCommentWriter(BoardWriter):
         try:
             clicked = page.evaluate(
                 """() => {
-                    const btn = document.querySelector('#submit, #commentform input[type="submit"], form.comment-form input[type="submit"]');
-                    if (!btn) return false;
-                    btn.click();
-                    return true;
+                    const sels = [
+                      '#submit',
+                      '#commentform input[type="submit"]',
+                      '#commentform button[type="submit"]',
+                      'form.comment-form input[type="submit"]',
+                      'form.comment-form button[type="submit"]',
+                      '#respond input[type="submit"]',
+                      '#respond button[type="submit"]',
+                      'form[action*="wp-comments-post"] input[type="submit"]',
+                      'form[action*="wp-comments-post"] button[type="submit"]',
+                      '.comment-form input[type="submit"]',
+                      '.comment-form button[type="submit"]',
+                    ];
+                    for (const s of sels) {
+                      const btn = document.querySelector(s);
+                      if (!btn) continue;
+                      try { btn.scrollIntoView({block:'center'}); } catch (e) {}
+                      btn.click();
+                      return true;
+                    }
+                    const forms = document.querySelectorAll('#commentform, form.comment-form, form[action*="wp-comments-post"]');
+                    for (const f of forms) {
+                      const btn = f.querySelector('button, input[type="submit"], input[type="button"]');
+                      if (!btn) continue;
+                      btn.click();
+                      return true;
+                    }
+                    return false;
                 }"""
             )
             if clicked:

@@ -8,7 +8,7 @@ from app_logger import log
 from article_builder import build_comment_content
 from board_writer import BoardWriter, random_english_name
 from link_utils import normalize_backlink_url, normalize_link_pairs
-from page_guard import assert_page_accessible, verify_comment_backlink
+from page_guard import assert_native_comment_system, assert_page_accessible, verify_comment_backlink
 
 COMMENT_SELECTORS = [
     'textarea[name="comment"]',
@@ -75,6 +75,7 @@ class GenericCommentWriter(BoardWriter):
         self.page.goto(self._source_url, wait_until="domcontentloaded", timeout=45000)
         self.page.wait_for_timeout(2000)
         assert_page_accessible(self.page)
+        assert_native_comment_system(self.page)
         self._dismiss_cookie_banners()
         self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         self.page.wait_for_timeout(800)
