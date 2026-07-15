@@ -588,7 +588,7 @@ def upload_failure_cases(cfg: LogSyncConfig, cases: list[dict]) -> tuple[int, in
     return ok_n, fail_n, last
 
 
-def list_failure_cases(cfg: LogSyncConfig, *, limit: int = 120) -> tuple[list[FailureCaseEntry], str]:
+def list_failure_cases(cfg: LogSyncConfig, *, limit: int = 300) -> tuple[list[FailureCaseEntry], str]:
     if not cfg.can_upload():
         return [], "토큰·저장소 설정 필요"
     code, body = _api_request("GET", _contents_url(cfg.owner, cfg.repo, "failures"), token=cfg.effective_token())
@@ -665,36 +665,85 @@ def fetch_failure_case(cfg: LogSyncConfig, pc_id: str, case_id: str) -> tuple[di
     return data, ""
 
 
-def failure_case_to_cursor_report(case: dict) -> str:
+def failure_case_to_cursor_report(case: dict, *, compact: bool = False) -> str:
     """Cursor에 붙여넣어 기능 보강 요청용 마크다운."""
+    html_limit = 4000 if compact else 12000
+    snap_limit = 3000 if compact else 8000
     lines = [
-        "# 백링크 자동화 — 원격 실패 케이스 (기능 보강 요청)",
+        f"### {case.get('url', '(URL 없음)')}",
         "",
         f"- case_id: `{case.get('case_id', '')}`",
         f"- pc_id: `{case.get('pc_id', '')}`",
         f"- app: `{case.get('app_version', '')}`",
         f"- uploaded_at: {case.get('uploaded_at', '')}",
         f"- action/kind: `{case.get('action', '')}` / `{case.get('kind', '')}`",
-        f"- URL: {case.get('url', '')}",
         f"- 한글 사유: {case.get('localized_reason', '')}",
         f"- raw_error: {case.get('raw_error', '')}",
         f"- form_in_dom(추정): {'예' if case.get('form_in_dom') else '아니오'}",
         "",
-        "## DOM 마커",
+        "#### DOM 마커",
         "```json",
         json.dumps(case.get("dom_markers") or {}, ensure_ascii=False, indent=2),
         "```",
         "",
-        "## 스냅샷",
+        "#### 스냅샷",
         "```json",
-        json.dumps(case.get("snapshot") or {}, ensure_ascii=False, indent=2)[:8000],
+        json.dumps(case.get("snapshot") or {}, ensure_ascii=False, indent=2)[:snap_limit],
         "```",
-        "",
-        "## 요청",
-        "위 URL은 화면에 댓글/입력 폼이 있는데 프로그램이 못 찾은 경우가 많습니다.",
-        "셀렉터·대기·스크롤·visibility 로직을 보강해 자동 등록되게 수정해 주세요.",
     ]
     html = case.get("html_excerpt") or ""
     if html:
-        lines.extend(["", "## HTML 발췌", "```html", html[:12000], "```"])
+        lines.extend(["", "#### HTML 발췌", "```html", html[:html_limit], "```"])
+    return "\n".join(lines)
+
+
+def failure_cases_to_cursor_report(cases: list[dict]) -> str:
+    """여러 실패 케이스를 한 Cursor 보고서로 합칩니다."""
+    if not cases:
+        return ""
+    if len(cases) == 1:
+        body = failure_case_to_cursor_report(cases[0], compact=False)
+        return "\n".join(
+            [
+                "# 백링크 자동화 — 원격 실패 케이스 (기능 보강 요청)",
+                "",
+                body,
+                "",
+                "## 요청",
+                "위 URL은 화면에 댓글/입력 폼이 있는데 프로그램이 못 찾은 경우가 많습니다.",
+                "셀렉터·대기·스크롤·visibility 로직을 보강해 자동 등록되게 수정해 주세요.",
+            ]
+        )
+
+    lines = [
+        "# 백링크 자동화 — 원격 실패 케이스 전체 (기능 보강 요청)",
+        "",
+        f"총 **{len(cases)}**건. 아래 URL 전부 자동 등록되도록 보강해 주세요.",
+        "",
+        "## 실패 URL 목록",
+        "",
+    ]
+    for i, c in enumerate(cases, 1):
+        form = "폼있음" if c.get("form_in_dom") else "폼불명"
+        reason = (c.get("localized_reason") or c.get("raw_error") or "")[:80]
+        lines.append(f"{i}. {c.get('url', '')} — {form} — {reason}")
+
+    lines.extend(
+        [
+            "",
+            "## 요청",
+            "목록의 모든 사이트에 대해 셀렉터·대기·스크롤·visibility·로그인/권한 분기 로직을 보강해 주세요.",
+            "수정 불가능한 사이트(서버 차단·HTTP 406 등)는 알려 주시면 배포 차단 목록에 넣겠습니다.",
+            "",
+            "## 건별 상세",
+            "",
+        ]
+    )
+    for i, c in enumerate(cases, 1):
+        lines.append(f"## [{i}/{len(cases)}]")
+        lines.append("")
+        lines.append(failure_case_to_cursor_report(c, compact=True))
+        lines.append("")
+        lines.append("---")
+        lines.append("")
     return "\n".join(lines)

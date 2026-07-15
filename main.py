@@ -51,7 +51,7 @@ from app_paths import is_frozen, playwright_browsers_error_message, playwright_b
 from log_sync import (
     LogSyncConfig,
     build_failure_case,
-    failure_case_to_cursor_report,
+    failure_cases_to_cursor_report,
     fetch_client_log,
     fetch_failure_case,
     get_pc_id,
@@ -1976,10 +1976,16 @@ class BacklinkApp(tk.Tk):
         rbtn.pack(fill="x", pady=(0, 4))
         ttk.Button(rbtn, text="클립보드 복사", command=self._on_remote_log_copy).pack(side="left", padx=(0, 6))
         ttk.Button(rbtn, text="파일로 저장", command=self._on_remote_log_save).pack(side="left", padx=(0, 6))
-        ttk.Button(rbtn, text="Cursor 보고서 복사", command=self._on_remote_failure_cursor_copy).pack(
+        ttk.Button(rbtn, text="선택건 Cursor", command=self._on_remote_failure_cursor_copy).pack(
             side="left", padx=(0, 6)
         )
-        ttk.Button(rbtn, text="Cursor 보고서 저장", command=self._on_remote_failure_cursor_save).pack(
+        ttk.Button(rbtn, text="선택건 저장", command=self._on_remote_failure_cursor_save).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(rbtn, text="전체 Cursor 복사", command=self._on_remote_failure_cursor_all_copy).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(rbtn, text="전체 Cursor 저장", command=self._on_remote_failure_cursor_all_save).pack(
             side="left"
         )
         self.remote_log_box = scrolledtext.ScrolledText(
@@ -2465,7 +2471,7 @@ class BacklinkApp(tk.Tk):
                     self.log_sync_detail_var.set(err or "없음")
                     return
                 self._remote_failure_detail = data
-                report = failure_case_to_cursor_report(data)
+                report = failure_cases_to_cursor_report([data])
                 self._remote_log_text = report
                 self.remote_log_box.insert("1.0", report)
                 mark = "폼DOM있음" if data.get("form_in_dom") else "폼DOM불명"
@@ -2478,30 +2484,30 @@ class BacklinkApp(tk.Tk):
     def _on_remote_failure_cursor_copy(self) -> None:
         text = ""
         if self._remote_failure_detail:
-            text = failure_case_to_cursor_report(self._remote_failure_detail)
+            text = failure_cases_to_cursor_report([self._remote_failure_detail])
         else:
             text = self._remote_log_text or self.remote_log_box.get("1.0", "end").strip()
         if not text:
-            messagebox.showinfo("안내", "먼저 실패 케이스를 선택해 주세요.")
+            messagebox.showinfo("안내", "먼저 실패 케이스를 선택해 주세요. (한 건만)")
             return
         self.clipboard_clear()
         self.clipboard_append(text)
         self.update_idletasks()
-        self._show_toast("Cursor 보고서 복사됨 — 채팅에 붙여넣으세요")
+        self._show_toast("선택건 Cursor 보고서 복사됨")
 
     def _on_remote_failure_cursor_save(self) -> None:
         from tkinter import filedialog
 
         text = ""
         if self._remote_failure_detail:
-            text = failure_case_to_cursor_report(self._remote_failure_detail)
+            text = failure_cases_to_cursor_report([self._remote_failure_detail])
         else:
             text = self._remote_log_text or self.remote_log_box.get("1.0", "end").strip()
         if not text:
-            messagebox.showinfo("안내", "먼저 실패 케이스를 선택해 주세요.")
+            messagebox.showinfo("안내", "먼저 실패 케이스를 선택해 주세요. (한 건만)")
             return
         path = filedialog.asksaveasfilename(
-            title="Cursor 실패 보고서 저장",
+            title="선택건 Cursor 보고서 저장",
             defaultextension=".md",
             filetypes=[("Markdown", "*.md"), ("Text", "*.txt"), ("All", "*.*")],
             initialfile="failure_case_cursor.md",
@@ -2511,9 +2517,105 @@ class BacklinkApp(tk.Tk):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
-            self._show_toast("Cursor 보고서 저장됨")
+            self._show_toast("선택건 Cursor 보고서 저장됨")
         except OSError as exc:
             messagebox.showerror("저장 실패", str(exc))
+
+    def _build_all_failure_cursor_report(self, on_done) -> None:
+        """원격 실패 목록 전체를 내려받아 Cursor 보고서로 만든 뒤 on_done(text|None, err, count) 호출."""
+        entries = getattr(self, "_remote_failure_cases", None) or []
+        if not entries:
+            messagebox.showinfo(
+                "안내",
+                "먼저 「원격 실패 목록」을 눌러 목록을 불러온 뒤,\n"
+                "「전체 Cursor 복사/저장」을 사용하세요.",
+            )
+            on_done(None, "목록 없음", 0)
+            return
+        cfg = self._get_log_sync_config()
+        n = len(entries)
+        self.log_sync_detail_var.set(f"전체 실패 {n}건 불러오는 중…")
+
+        def worker() -> None:
+            cases: list[dict] = []
+            errors: list[str] = []
+            for i, e in enumerate(entries, 1):
+                data, err = fetch_failure_case(cfg, e.pc_id, e.case_id)
+                if data:
+                    cases.append(data)
+                else:
+                    errors.append(f"{e.pc_id}/{e.case_id}: {err or '실패'}")
+
+                def prog(i=i, n=n) -> None:
+                    if hasattr(self, "log_sync_detail_var"):
+                        self.log_sync_detail_var.set(f"전체 실패 불러오는 중… {i}/{n}")
+
+                self.after(0, prog)
+            text = failure_cases_to_cursor_report(cases) if cases else ""
+            err_msg = ""
+            if not cases:
+                err_msg = "건을 불러오지 못했습니다.\n" + "\n".join(errors[:5])
+            elif errors:
+                err_msg = f"{len(cases)}건 성공, {len(errors)}건 실패"
+
+            def done() -> None:
+                on_done(text or None, err_msg, len(cases))
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_remote_failure_cursor_all_copy(self) -> None:
+        def on_done(text: str | None, err: str, count: int) -> None:
+            if not text:
+                if err and err != "목록 없음":
+                    messagebox.showerror("실패", err)
+                return
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update_idletasks()
+            self.remote_log_box.delete("1.0", "end")
+            self.remote_log_box.insert("1.0", text)
+            self._remote_log_text = text
+            msg = f"전체 Cursor 보고서 복사됨 ({count}건)"
+            if err:
+                msg += f" · {err}"
+            self.log_sync_detail_var.set(msg)
+            self._show_toast(msg)
+
+        self._build_all_failure_cursor_report(on_done)
+
+    def _on_remote_failure_cursor_all_save(self) -> None:
+        from tkinter import filedialog
+
+        def on_done(text: str | None, err: str, count: int) -> None:
+            if not text:
+                if err and err != "목록 없음":
+                    messagebox.showerror("실패", err)
+                return
+            path = filedialog.asksaveasfilename(
+                title="전체 실패 Cursor 보고서 저장",
+                defaultextension=".md",
+                filetypes=[("Markdown", "*.md"), ("Text", "*.txt"), ("All", "*.*")],
+                initialfile="failure_cases_all_cursor.md",
+            )
+            if not path:
+                return
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.remote_log_box.delete("1.0", "end")
+                self.remote_log_box.insert("1.0", text)
+                self._remote_log_text = text
+                msg = f"전체 Cursor 보고서 저장됨 ({count}건)"
+                if err:
+                    msg += f" · {err}"
+                self.log_sync_detail_var.set(msg)
+                self._show_toast(msg)
+            except OSError as exc:
+                messagebox.showerror("저장 실패", str(exc))
+
+        self._build_all_failure_cursor_report(on_done)
 
     def _on_history_select(self, _event=None) -> None:
         pass
