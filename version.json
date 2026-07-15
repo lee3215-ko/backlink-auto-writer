@@ -1,9 +1,12 @@
 {
     "version":  "1.0.18",
-    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.18/BacklinkWriter.zip",
+    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477672733",
     "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.18/BacklinkWriter.zip",
     "notes":  "실패52건: 수정불가 사이트 차단목록, Disqus 조기감지, WP 제출버튼 탐색 강화",
+    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477672733",
+    "asset_id":  477672733,
     "download_urls":  [
+                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/477672733",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.18/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
                       ],
