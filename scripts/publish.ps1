@@ -85,6 +85,16 @@ function Write-VersionJson($cfg, [string]$Version, [string]$ReleaseNotes) {
     if ($assetId) {
         $apiDownloadUrl = "https://api.github.com/repos/$owner/$repo/releases/assets/$assetId"
     }
+    $blockedSites = @()
+    $blockedPath = Join-Path $Root "blocked_sites.json"
+    if (Test-Path $blockedPath) {
+        try {
+            $blockedRaw = Get-Content $blockedPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($blockedRaw.sites) { $blockedSites = @($blockedRaw.sites) }
+        } catch {
+            $blockedSites = @()
+        }
+    }
     $payload = [ordered]@{
         version = $Version
         url     = if ($apiDownloadUrl) { $apiDownloadUrl } else { $downloadUrlVersioned }
@@ -100,7 +110,10 @@ function Write-VersionJson($cfg, [string]$Version, [string]$ReleaseNotes) {
         $downloadUrlVersioned,
         $downloadUrlLatest
     ) | Where-Object { $_ }
-    $json = $payload | ConvertTo-Json -Depth 4
+    if ($blockedSites.Count -gt 0) {
+        $payload.blocked_sites = $blockedSites
+    }
+    $json = $payload | ConvertTo-Json -Depth 8
     Write-TextNoBom (Join-Path $Root "version.json") ($json + "`n")
 }
 
@@ -172,7 +185,7 @@ Write-Host "[3/5] GitHub push..."
 $addArgs = @()
 foreach ($item in $cfg.git_add) { $addArgs += $item }
 if ($addArgs.Count -gt 0) { Invoke-RepoGit add @addArgs }
-Invoke-RepoGit add deploy.json deploy.bat version.json scripts assets 2>$null
+Invoke-RepoGit add deploy.json deploy.bat version.json blocked_sites.json scripts assets 2>$null
 Invoke-RepoGit add -u
 
 if (Invoke-RepoGit status --porcelain) {

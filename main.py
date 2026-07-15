@@ -18,6 +18,7 @@ from batch_jobs import PostJob, build_jobs, parse_lines, normalize_board_url
 from board_writer import BoardWriter, random_english_name
 from comment_writer import CommentWriter
 from post_history import PostHistory, PostRecord
+from blocked_sites import apply_blocked_sites, fetch_remote_blocked_sites, load_local_blocked_sites
 from excluded_urls import ExcludedUrlRegistry
 from target_jobs import TargetJob, build_target_jobs
 from url_analyzer import UrlAnalysis, analyze_urls, filter_unsupported, summarize_analyses
@@ -171,6 +172,7 @@ class BacklinkApp(tk.Tk):
                 current_version=APP_VERSION,
             )
         self.after(300, self._apply_startup_url_recommend)
+        self.after(800, self._apply_remote_blocked_sites_async)
 
     def _on_headless_toggle(self) -> None:
         set_headless(bool(self.headless_var.get()))
@@ -1787,6 +1789,56 @@ class BacklinkApp(tk.Tk):
         self.urls_box.delete("1.0", "end")
         if remaining:
             self.urls_box.insert("1.0", "\n".join(remaining) + "\n")
+
+    def _apply_remote_blocked_sites_async(self) -> None:
+        """서버 차단 목록을 받아 이용자 URL·이력에서 제외."""
+
+        def worker() -> None:
+            sites = fetch_remote_blocked_sites()
+            if not sites:
+                sites = load_local_blocked_sites()
+
+            def done() -> None:
+                self._apply_blocked_sites_list(sites)
+
+            self.after(0, done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_blocked_sites_list(self, sites) -> None:
+        if not sites:
+            return
+        before_urls = len(self._all_parsed_urls()) if hasattr(self, "urls_box") else 0
+        added, reasons = apply_blocked_sites(self.excluded_urls, sites)
+        # 이력에서도 동일 호스트/URL 제거
+        removed_hist = 0
+        try:
+            keys_to_remove = set()
+            for rec in self.history.records:
+                url = rec.post_url or rec.list_url or rec.board_url
+                if self.excluded_urls.is_excluded(url):
+                    keys_to_remove.add(rec.board_key)
+            for key in keys_to_remove:
+                removed_hist += self.history.remove_board(key)
+        except Exception:
+            pass
+
+        self._purge_excluded_urls_from_box()
+        after_urls = len(self._all_parsed_urls()) if hasattr(self, "urls_box") else 0
+        purged = max(0, before_urls - after_urls)
+        self._sync_urls_pick_list(preserve_selection=True)
+        self._refresh_history_tree()
+        self._refresh_counts()
+        self._schedule_save()
+
+        if added or purged or removed_hist:
+            msg = f"자동화 불가 사이트 제외 — URL {purged}건 삭제"
+            if removed_hist:
+                msg += f" · 이력 {removed_hist}건"
+            self._log(f"[차단목록] {msg}", "info")
+            for r in reasons[:5]:
+                self._log(f"[차단목록] {r}", "info")
+            self._show_toast(msg)
 
     def _build_remote_logs_tab(self) -> None:
         tab = ttk.Frame(self.notebook)

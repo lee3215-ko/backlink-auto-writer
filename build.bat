@@ -32,6 +32,7 @@ if errorlevel 1 goto fail
 echo [3b/4] Bundling log sync token (if present)...
 if exist "log_sync_token.txt" copy /Y "log_sync_token.txt" "dist\BacklinkWriter\log_sync_token.txt" >nul
 if exist "log_sync_token_for_clients.txt" if not exist "dist\BacklinkWriter\log_sync_token.txt" copy /Y "log_sync_token_for_clients.txt" "dist\BacklinkWriter\log_sync_token.txt" >nul
+if exist "blocked_sites.json" copy /Y "blocked_sites.json" "dist\BacklinkWriter\blocked_sites.json" >nul
 
 echo [4/4] Done.
 echo Output: dist\BacklinkWriter\BacklinkWriter.exe

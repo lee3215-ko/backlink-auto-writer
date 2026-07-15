@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "updated_at": "2026-07-15",
+  "sites": [
+    {
+      "host": "gruposanvicentegalapagos.com",
+      "urls": [
+        "https://gruposanvicentegalapagos.com/santa-cruz",
+        "http://gruposanvicentegalapagos.com/santa-cruz",
+        "https://www.gruposanvicentegalapagos.com/santa-cruz",
+        "http://www.gruposanvicentegalapagos.com/santa-cruz"
+      ],
+      "reason": "HTTP 406 Not Acceptable / 로딩 실패 — 자동화 접속 불가"
+    }
+  ]
+}

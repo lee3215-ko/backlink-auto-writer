@@ -1,13 +1,22 @@
 {
-    "version":  "1.0.12",
-    "url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/476235151",
-    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
-    "notes":  "로그 업로드: 배포 zip에 관리자 토큰 포함 — 다른 PC는 PAT 발급 없이「배포 토큰 적용」후 연결 테스트",
-    "api_download_url":  "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/476235151",
-    "asset_id":  476235151,
+    "version":  "1.0.13",
+    "url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.13/BacklinkWriter.zip",
+    "download_url":  "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.13/BacklinkWriter.zip",
+    "notes":  "자동화 불가 사이트(gruposanvicente 등) 차단 목록 — 업데이트/시작 시 이용자 URL·이력에서 자동 삭제",
     "download_urls":  [
-                          "https://api.github.com/repos/lee3215-ko/backlink-auto-writer/releases/assets/476235151",
-                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.12/BacklinkWriter.zip",
+                          "https://github.com/lee3215-ko/backlink-auto-writer/releases/download/v1.0.13/BacklinkWriter.zip",
                           "https://github.com/lee3215-ko/backlink-auto-writer/releases/latest/download/BacklinkWriter.zip"
+                      ],
+    "blocked_sites":  [
+                          {
+                              "host":  "gruposanvicentegalapagos.com",
+                              "urls":  [
+                                           "https://gruposanvicentegalapagos.com/santa-cruz",
+                                           "http://gruposanvicentegalapagos.com/santa-cruz",
+                                           "https://www.gruposanvicentegalapagos.com/santa-cruz",
+                                           "http://www.gruposanvicentegalapagos.com/santa-cruz"
+                                       ],
+                              "reason":  "HTTP 406 Not Acceptable / 로딩 실패 — 자동화 접속 불가"
+                          }
                       ]
 }
